@@ -3,13 +3,13 @@ const pdfParse = require('pdf-parse');
 const axios = require('axios');
 const http = require('http');
 
-// 1. DUMMY WEB SERVER (Fixes Render's Free Web Service port checks!)
+// Dummy web server to keep Render's port checker happy
 const server = http.createServer((req, res) => {
     res.writeHead(200, { 'Content-Type': 'text/plain' });
-    res.end('Bot is running smoothly!\n');
+    res.end('Quiz engine active!\n');
 });
 server.listen(process.env.PORT || 3000, () => {
-    console.log(`🌐 Dummy server listening on port ${process.env.PORT || 3000}`);
+    console.log(`🌐 Web listener online`);
 });
 
 const client = new Client({
@@ -70,17 +70,20 @@ client.on('messageCreate', async (message) => {
 client.on('interactionCreate', async (interaction) => {
     if (!interaction.isButton()) return;
 
-    // Direct deferral immediately to stop any 3-second Discord timeouts
+    // Instantly bypass Discord's 3-second limit by sending an immediate ACK signal
     try {
-        await interaction.deferUpdate();
+        await interaction.deferReply({ ephemeral: true });
+        // Delete the ephemeral acknowledgment right away so it doesn't clutter the UI
+        await interaction.deleteReply();
     } catch (err) {
-        console.error("Defer failed", err);
+        // Safe catch if Discord handles the acknowledgment smoothly
     }
 
+    const channel = interaction.channel;
+
+    // 1. START QUIZ
     if (interaction.customId === 'dyn_start_quiz') {
-        if (dynamicQuiz.length === 0) {
-            return interaction.followUp({ content: "No quiz data loaded. Please upload a PDF first!", ephemeral: true });
-        }
+        if (dynamicQuiz.length === 0) return;
 
         const firstItem = dynamicQuiz[0];
         const questionEmbed = new EmbedBuilder()
@@ -96,8 +99,10 @@ client.on('interactionCreate', async (interaction) => {
             new ButtonBuilder().setCustomId(`dyn_answer_0_0_D`).setLabel('D').setStyle(ButtonStyle.Secondary)
         );
 
-        await interaction.editReply({ embeds: [questionEmbed], components: [btnRow] });
+        // Send a fresh new message in the chat channel to completely bypass old message locks
+        await channel.send({ embeds: [questionEmbed], components: [btnRow] });
 
+    // 2. EVALUATE CHOSEN ANSWER
     } else if (interaction.customId.startsWith('dyn_answer_')) {
         const [, indexStr, scoreStr, chosen] = interaction.customId.split('_');
         const idx = parseInt(indexStr);
@@ -109,13 +114,9 @@ client.on('interactionCreate', async (interaction) => {
 
         let breakdown = "";
         for (const [key, val] of Object.entries(currentItem.options)) {
-            if (key === currentItem.correct) {
-                breakdown += `🟢 **${val} (Correct Answer)**\n`;
-            } else if (key === chosen) {
-                breakdown += `🔴 **${val} (Your Pick)**\n`;
-            } else {
-                breakdown += `⚪ ${val}\n`;
-            }
+            if (key === currentItem.correct) breakdown += `🟢 **${val} (Correct Answer)**\n`;
+            else if (key === chosen) breakdown += `🔴 **${val} (Your Pick)**\n`;
+            else breakdown += `⚪ ${val}\n`;
         }
 
         const evaluationEmbed = new EmbedBuilder()
@@ -136,8 +137,9 @@ client.on('interactionCreate', async (interaction) => {
             evaluationEmbed.addFields({ name: '🏁 Finish!', value: `Final Score: ${currentScore}/${dynamicQuiz.length}` });
         }
 
-        await interaction.editReply({ embeds: [evaluationEmbed], components: navigationRow.components.length ? [navigationRow] : [] });
+        await channel.send({ embeds: [evaluationEmbed], components: navigationRow.components.length ? [navigationRow] : [] });
 
+    // 3. NEXT QUESTION GENERATION
     } else if (interaction.customId.startsWith('dyn_next_')) {
         const [, nextIndexStr, nextScoreStr] = interaction.customId.split('_');
         const index = parseInt(nextIndexStr);
@@ -157,7 +159,7 @@ client.on('interactionCreate', async (interaction) => {
             new ButtonBuilder().setCustomId(`dyn_answer_${index}_${score}_D`).setLabel('D').setStyle(ButtonStyle.Secondary)
         );
 
-        await interaction.editReply({ embeds: [questionEmbed], components: [btnRow] });
+        await channel.send({ embeds: [questionEmbed], components: [btnRow] });
     }
 });
 
