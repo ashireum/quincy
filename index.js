@@ -3,7 +3,7 @@ const pdfParse = require('pdf-parse');
 const axios = require('axios');
 const http = require('http');
 
-// Dummy web server to keep Render's port checker happy
+// Dummy web server to keep Render happy
 const server = http.createServer((req, res) => {
     res.writeHead(200, { 'Content-Type': 'text/plain' });
     res.end('Quiz engine active!\n');
@@ -70,20 +70,23 @@ client.on('messageCreate', async (message) => {
 client.on('interactionCreate', async (interaction) => {
     if (!interaction.isButton()) return;
 
-    // Instantly bypass Discord's 3-second limit by sending an immediate ACK signal
     try {
         await interaction.deferReply({ ephemeral: true });
-        // Delete the ephemeral acknowledgment right away so it doesn't clutter the UI
         await interaction.deleteReply();
-    } catch (err) {
-        // Safe catch if Discord handles the acknowledgment smoothly
-    }
+    } catch (err) {}
 
     const channel = interaction.channel;
 
+    // CRASH PROTECTION: If Render went to sleep and wiped the array memory
+    if (interaction.customId !== 'dyn_start_quiz' && dynamicQuiz.length === 0) {
+        return channel.send("⚠️ **Session Expired:** Render's free tier went to sleep and cleared the quiz cache. Please upload your PDF reviewer again to start a fresh session!");
+    }
+
     // 1. START QUIZ
     if (interaction.customId === 'dyn_start_quiz') {
-        if (dynamicQuiz.length === 0) return;
+        if (dynamicQuiz.length === 0) {
+            return channel.send("⚠️ Quiz data is empty. Please re-upload your PDF file!");
+        }
 
         const firstItem = dynamicQuiz[0];
         const questionEmbed = new EmbedBuilder()
@@ -99,7 +102,6 @@ client.on('interactionCreate', async (interaction) => {
             new ButtonBuilder().setCustomId(`dyn_answer_0_0_D`).setLabel('D').setStyle(ButtonStyle.Secondary)
         );
 
-        // Send a fresh new message in the chat channel to completely bypass old message locks
         await channel.send({ embeds: [questionEmbed], components: [btnRow] });
 
     // 2. EVALUATE CHOSEN ANSWER
@@ -108,6 +110,10 @@ client.on('interactionCreate', async (interaction) => {
         const idx = parseInt(indexStr);
         let currentScore = parseInt(scoreStr);
         const currentItem = dynamicQuiz[idx];
+
+        if (!currentItem) {
+            return channel.send("⚠️ Missing question data. Please re-upload your PDF.");
+        }
 
         const isCorrect = chosen === currentItem.correct;
         if (isCorrect) currentScore++;
@@ -146,6 +152,10 @@ client.on('interactionCreate', async (interaction) => {
         const score = parseInt(nextScoreStr);
         const activeItem = dynamicQuiz[index];
         
+        if (!activeItem) {
+            return channel.send("⚠️ Question data unavailable. Please re-upload your PDF.");
+        }
+
         const questionEmbed = new EmbedBuilder()
             .setTitle(`📝 Question ${index + 1}`)
             .setDescription(`**${activeItem.question}**\n\n🅰️ ${activeItem.options.A}\n🅱️ ${activeItem.options.B}\n🆃 ${activeItem.options.C}\n🅳 ${activeItem.options.D}`)
