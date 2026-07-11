@@ -1,0 +1,10 @@
+{
+  "name": "quincy",
+  "version": "1.0.0",
+  "main": "index.js",
+  "dependencies": {
+    "discord.js": "^14.14.1",
+    "pdf-parse": "^1.1.1",
+    "axios": "^1.6.8"
+  }
+}
