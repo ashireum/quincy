@@ -1,6 +1,16 @@
 const { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
 const pdfParse = require('pdf-parse');
 const axios = require('axios');
+const http = require('http');
+
+// 1. DUMMY WEB SERVER (Fixes Render's Free Web Service port checks!)
+const server = http.createServer((req, res) => {
+    res.writeHead(200, { 'Content-Type': 'text/plain' });
+    res.end('Bot is running smoothly!\n');
+});
+server.listen(process.env.PORT || 3000, () => {
+    console.log(`🌐 Dummy server listening on port ${process.env.PORT || 3000}`);
+});
 
 const client = new Client({
     intents: [
@@ -10,9 +20,7 @@ const client = new Client({
     ]
 });
 
-// Safely grabs your secret token from Render's environment variables lockbox
 const TOKEN = process.env.DISCORD_TOKEN;
-
 let dynamicQuiz = [];
 
 client.once('ready', () => {
@@ -62,10 +70,16 @@ client.on('messageCreate', async (message) => {
 client.on('interactionCreate', async (interaction) => {
     if (!interaction.isButton()) return;
 
-    // 1. HANDLE STARTING THE QUIZ
+    // Direct deferral immediately to stop any 3-second Discord timeouts
+    try {
+        await interaction.deferUpdate();
+    } catch (err) {
+        console.error("Defer failed", err);
+    }
+
     if (interaction.customId === 'dyn_start_quiz') {
         if (dynamicQuiz.length === 0) {
-            return interaction.reply({ content: "No quiz data loaded. Please upload a PDF first!", ephemeral: true });
+            return interaction.followUp({ content: "No quiz data loaded. Please upload a PDF first!", ephemeral: true });
         }
 
         const firstItem = dynamicQuiz[0];
@@ -82,12 +96,9 @@ client.on('interactionCreate', async (interaction) => {
             new ButtonBuilder().setCustomId(`dyn_answer_0_0_D`).setLabel('D').setStyle(ButtonStyle.Secondary)
         );
 
-        await interaction.update({ embeds: [questionEmbed], components: [btnRow] });
+        await interaction.editReply({ embeds: [questionEmbed], components: [btnRow] });
 
-    // 2. HANDLE ANSWER SELECTION (With added Defer to stop timeouts!)
     } else if (interaction.customId.startsWith('dyn_answer_')) {
-        await interaction.deferUpdate(); // Tells Discord to wait while Render processes
-
         const [, indexStr, scoreStr, chosen] = interaction.customId.split('_');
         const idx = parseInt(indexStr);
         let currentScore = parseInt(scoreStr);
@@ -127,10 +138,7 @@ client.on('interactionCreate', async (interaction) => {
 
         await interaction.editReply({ embeds: [evaluationEmbed], components: navigationRow.components.length ? [navigationRow] : [] });
 
-    // 3. HANDLE NEXT QUESTION NAVIGATION (With added Defer!)
     } else if (interaction.customId.startsWith('dyn_next_')) {
-        await interaction.deferUpdate(); // Tells Discord to wait while Render loads next question
-
         const [, nextIndexStr, nextScoreStr] = interaction.customId.split('_');
         const index = parseInt(nextIndexStr);
         const score = parseInt(nextScoreStr);
@@ -153,7 +161,6 @@ client.on('interactionCreate', async (interaction) => {
     }
 });
 
-// Advanced Smart Parser to grab Question Text, Options, Key Answers, and Rationales
 function parseQuestions(text) {
     const lines = text.split('\n').map(line => line.trim()).filter(line => line.length > 0);
     const questions = [];
@@ -162,7 +169,6 @@ function parseQuestions(text) {
     for (let i = 0; i < lines.length; i++) {
         const line = lines[i];
 
-        // Match question numbers (e.g., "1. What is...", "12) Which...")
         if (/^\d+[\.\)]/.test(line)) {
             if (currentQuestion && currentQuestion.question && currentQuestion.options.A) {
                 questions.push(currentQuestion);
@@ -170,7 +176,7 @@ function parseQuestions(text) {
             currentQuestion = {
                 question: line.replace(/^\d+[\.\)]\s*/, ''),
                 options: {},
-                correct: 'A', // Fallback anchor default
+                correct: 'A', 
                 rationale: 'No specific study note provided in document.'
             };
             continue;
@@ -178,28 +184,24 @@ function parseQuestions(text) {
 
         if (!currentQuestion) continue;
 
-        // Extract Options A, B, C, D
         if (/^[A-D\u1F1E6-\u1F1E9][\.\)]/i.test(line)) {
             const letter = line[0].toUpperCase();
             currentQuestion.options[letter] = line.replace(/^[A-D][\.\)]\s*/i, '');
             continue;
         }
 
-        // Match Answer Keys
         if (line.toLowerCase().includes('answer:') || line.toLowerCase().includes('correct answer:')) {
             const match = line.match(/(?:answer:\s*([A-D]))/i);
             if (match) currentQuestion.correct = match[1].toUpperCase();
             continue;
         }
 
-        // Match Rationales / Explanations
         if (line.toLowerCase().startsWith('rationale:') || line.toLowerCase().startsWith('explanation:')) {
             currentQuestion.rationale = line.replace(/^(?:rationale|explanation):\s*/i, '');
             continue;
         }
 
-        // Append stray lingering lines to the question text block
-        if (Object.keys(currentQuestion.options).length === 0) {
+        if (currentQuestion && Object.keys(currentQuestion.options).length === 0) {
             currentQuestion.question += " " + line;
         }
     }
