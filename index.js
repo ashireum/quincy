@@ -11,7 +11,7 @@ const client = new Client({
 });
 
 // ⚠️ PASTE YOUR SECRET BOT TOKEN BETWEEN THE QUOTES BELOW
-const TOKEN = 'Discord Token';
+const TOKEN = process.env.DISCORD_TOKEN;
 
 let dynamicQuiz = []; 
 
