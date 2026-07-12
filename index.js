@@ -233,3 +233,14 @@ function parseQuestions(text) {
 
         if (currentQuestion && Object.keys(currentQuestion.options).length === 0) {
             currentQuestion.question += " " + line;
+        }
+    }
+
+    if (currentQuestion && currentQuestion.question && currentQuestion.options.A) {
+        questions.push(currentQuestion);
+    }
+
+    return questions;
+}
+
+client.login(TOKEN);
