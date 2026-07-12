@@ -27,27 +27,16 @@ const client = new Client({
 const TOKEN = process.env.DISCORD_TOKEN;
 
 // Global memory map locked to text channel IDs
-// Stored value shape: { userId: string, questions: Array }
 const globalStorage = new Map();
 
 // --- PRE-COMPILED REGULAR EXPRESSIONS ---
-// Matches Question Starts: e.g., "1.", "1)", "Question 1", "Q1.", "No. 3" (Filters out isolated 4-digit years)
 const QUESTION_START_REGEX = /^(?:(?:Question|Q|No\.)\s*)?(\d+)(?:[\.\)]|(?:\s+))?/i;
 const ISOLATED_YEAR_REGEX = /^(19|20)\d{2}$/;
-
-// Matches Option Starts: A, B, C, D followed by ., ), :, or -
 const OPTION_START_REGEX = /^([A-D])\s*[\.\):\-\u2013\u2014]/i;
-
-// Matches highly flexible Answer keys
 const ANSWER_KEY_REGEX = /^(?:CORRECT\s+)?ANSWER\s*[:\-\s=]+\s*[\u201C\u201D"']?([A-D])[\u201C\u201D"']?(?:\.|\b)/i;
-
-// Matches Rationale starts
 const RATIONALE_START_REGEX = /^(?:Rationale|Explanation)\s*:\s*/i;
-
-// Matches PDF page markers/artifacts to ignore
 const ARTIFACT_REGEX = /^(?:page\s*\d+|\d+\s*\/\s*\d+|copyright|ncm\s*\d+)/i;
 
-// --- UTILITY FUNCTIONS ---
 function shuffleArray(array) {
     for (let i = array.length - 1; i > 0; i--) {
         const j = Math.floor(Math.random() * (i + 1));
@@ -56,22 +45,19 @@ function shuffleArray(array) {
     return array;
 }
 
-// --- CORE PARSER LOGIC ---
 function parseQuestions(text) {
     if (!text || typeof text !== 'string') return [];
 
     const lines = text.split('\n').map(line => line.trim());
     const questions = [];
     let currentQuestion = null;
-    let parsingStage = 'none'; // 'none', 'question', 'options', 'rationale'
+    let parsingStage = 'none';
 
     for (let line of lines) {
         if (!line || ARTIFACT_REGEX.test(line)) continue;
 
-        // 1. Detect Question Header
         const qMatch = line.match(QUESTION_START_REGEX);
         if (qMatch && !ISOLATED_YEAR_REGEX.test(line)) {
-            // Push previous question if valid (At least 2 choices found)
             if (currentQuestion && currentQuestion.question && Object.keys(currentQuestion.options).length >= 2) {
                 questions.push(currentQuestion);
             }
@@ -89,7 +75,6 @@ function parseQuestions(text) {
 
         if (!currentQuestion) continue;
 
-        // 2. Detect Options (Choices)
         const oMatch = line.match(OPTION_START_REGEX);
         if (oMatch) {
             const letter = oMatch[1].toUpperCase();
@@ -98,26 +83,22 @@ function parseQuestions(text) {
             continue;
         }
 
-        // 3. Detect Answer Keys
         const aMatch = line.match(ANSWER_KEY_REGEX);
         if (aMatch) {
             currentQuestion.correct = aMatch[1].toUpperCase();
-            parsingStage = 'rationale'; // Transition phase to start collecting explanations
+            parsingStage = 'rationale';
             continue;
         }
 
-        // 4. Detect Explicit Rationale Flag Start
         if (RATIONALE_START_REGEX.test(line)) {
             currentQuestion.rationale = line.replace(RATIONALE_START_REGEX, '').trim();
             parsingStage = 'rationale';
             continue;
         }
 
-        // 5. Text-Wrapping Append Strategies
         if (parsingStage === 'question') {
             currentQuestion.question += ' ' + line;
         } else if (parsingStage === 'options') {
-            // Line wraps into previous option text block
             const existingLetters = Object.keys(currentQuestion.options);
             if (existingLetters.length > 0) {
                 const lastLetter = existingLetters[existingLetters.length - 1];
@@ -128,12 +109,10 @@ function parseQuestions(text) {
         }
     }
 
-    // Push trailing item
     if (currentQuestion && currentQuestion.question && Object.keys(currentQuestion.options).length >= 2) {
         questions.push(currentQuestion);
     }
 
-    // Apply Global Formatting Polish & Post-Processing Shuffles
     return questions.map(q => {
         q.question = q.question.replace(/\s+/g, ' ').trim();
         q.rationale = q.rationale.trim() || 'No specific study note provided.';
@@ -143,10 +122,9 @@ function parseQuestions(text) {
             const correctText = q.options[q.correct];
             displayChoices = shuffleArray([...displayChoices]);
             
-            // Re-map the correct key index seamlessly
             const newOptions = {};
             displayChoices.forEach((letter, index) => {
-                const targetKey = String.fromCharCode(65 + index); // Map back to sequence A, B, C, D
+                const targetKey = String.fromCharCode(65 + index);
                 newOptions[targetKey] = q.options[letter];
                 if (q.options[letter] === correctText) {
                     q.correct = targetKey;
@@ -160,13 +138,11 @@ function parseQuestions(text) {
     });
 }
 
-// --- CENTRAL EMBED BUILDER COMPONENT ---
 function buildQuizEmbed(item, index, total, score, answeredCount, chosen = null) {
     const embed = new EmbedBuilder().setColor(0x3498db);
     const regionalIndicators = { A: '🇦', B: '🇧', C: '🇨', D: '🇩' };
 
     if (!chosen) {
-        // Presentation Question Panel Mode
         embed.setTitle(`📝 Question ${index + 1} of ${total}`)
             .setDescription(`**${item.question}**`)
             .setFooter({ text: `Question ${index + 1}/${total} • Current Score: ${score}/${answeredCount}` });
@@ -177,7 +153,6 @@ function buildQuizEmbed(item, index, total, score, answeredCount, chosen = null)
             }
         });
     } else {
-        // Detailed Assessment Grading Screen Mode
         const isCorrect = chosen === item.correct;
         embed.setColor(isCorrect ? 0x2ecc71 : 0xe74c3c)
             .setTitle(`Question ${index + 1} Feedback`)
@@ -203,7 +178,6 @@ client.once('ready', () => {
     console.log(`🤖 Quiz Bot is online as ${client.user.tag}!`);
 });
 
-// --- TELEMETRY MESSAGE EVENT HANDLER ---
 client.on('messageCreate', async (message) => {
     if (message.author.bot) return;
 
@@ -233,19 +207,18 @@ client.on('messageCreate', async (message) => {
 
         let questions = parseQuestions(extractedText);
         if (questions.length === 0) {
-            return await loadingMessage.edit("❌ **Parsing Failure:** Could not identify any structured multiple choice items. Verify option lines match `A.` or `A)` templates and have matching `ANSWER:` keys under choices.");
+            return await loadingMessage.edit("❌ **Parsing Failure:** Could not identify any structured multiple choice items.");
         }
 
         if (SHUFFLE_QUESTIONS) {
             questions = shuffleArray(questions);
         }
 
-        // Cache session securely bounded by originating User Context
         globalStorage.set(message.channel.id, { userId: message.author.id, questions });
 
         const startEmbed = new EmbedBuilder()
             .setTitle("📚 Review Deck Loaded!")
-            .setDescription(`Successfully parsed **${questions.length}** valid operational questions out of your document metadata.\n\nPress the activation switch below to trigger your personal evaluation module.`)
+            .setDescription(`Successfully parsed **${questions.length}** valid operational questions out of your document metadata.`)
             .setColor(0x2ecc71);
 
         const row = new ActionRowBuilder().addComponents(
@@ -256,13 +229,12 @@ client.on('messageCreate', async (message) => {
 
     } catch (error) {
         console.error("Extraction pipeline failed:", error);
-        const fallbackMsg = "❌ **System Error:** Failed to read file stream. Check file composition formats or underlying storage corruption.";
+        const fallbackMsg = "❌ **System Error:** Failed to read file stream.";
         if (loadingMessage) await loadingMessage.edit(fallbackMsg).catch(() => {});
         else message.reply(fallbackMsg).catch(() => {});
     }
 });
 
-// --- INTERACTION COMPONENT INTERCEPTOR ---
 client.on('interactionCreate', async (interaction) => {
     if (!interaction.isButton()) return;
 
@@ -298,18 +270,16 @@ client.on('interactionCreate', async (interaction) => {
     }
 
     if (!session || !session.questions || session.questions.length === 0) {
-        return interaction.reply({ content: "⚠️ **Session Inactivity Timeout:** Re-upload your source material text file to sync active parameters.", ephemeral: true }).catch(() => {});
+        return interaction.reply({ content: "⚠️ **Session Inactivity Timeout:** Re-upload your source material text file.", ephemeral: true }).catch(() => {});
     }
 
-    // MULTI-USER OPERATION INTERCEPTOR GUARD
     if (session.userId && interaction.user.id !== session.userId) {
         return interaction.reply({ 
-            content: "❌ This quiz session belongs to another user. Please upload your own reviewer document to initiate an independent training deck.", 
+            content: "❌ This quiz session belongs to another user. Please upload your own reviewer document.", 
             ephemeral: true 
         });
     }
 
-    // Safely defer update to hold the channel socket window
     try {
         await interaction.deferUpdate();
     } catch (err) {
@@ -319,7 +289,10 @@ client.on('interactionCreate', async (interaction) => {
 
     const questions = session.questions;
 
-    // SCENARIO 1: Fire first dynamic card
+    // --- TEMPORARY DEBUGGING LOGS ---
+    console.log(`[DEBUG] Received customId: "${interaction.customId}"`);
+    console.log(`[DEBUG] Split Array:`, interaction.customId.split('_'));
+
     if (interaction.customId === 'dyn_start_quiz') {
         const activeItem = questions[0];
         const embed = buildQuizEmbed(activeItem, 0, questions.length, 0, 0);
@@ -333,15 +306,21 @@ client.on('interactionCreate', async (interaction) => {
 
         await interaction.message.edit({ embeds: [embed], components: [btnRow] }).catch(console.error);
 
-    // SCENARIO 2: Grade targeted multiple choice selection indices
     } else if (interaction.customId.startsWith('dyn_answer_')) {
-        const [, indexStr, scoreStr, chosen] = interaction.customId.split('_');
+        // FIXED ARRAY POSITION DESTRUCTURING: [ "dyn", "answer", "index", "score", "chosen" ]
+        const [, , indexStr, scoreStr, chosen] = interaction.customId.split('_');
         const idx = parseInt(indexStr);
         let currentScore = parseInt(scoreStr);
+        
+        console.log(`[DEBUG_ANSWER] Parsed Variables -> Index: ${idx}, Score: ${currentScore}, Chosen Option: "${chosen}"`);
+
+        // Defensive Validation Guard
+        if (isNaN(idx) || isNaN(currentScore) || !questions[idx] || !chosen) {
+            console.error(`[ERROR] Invalid parameters on answer click. Index: ${indexStr}, Score: ${scoreStr}, Chosen: ${chosen}`);
+            return;
+        }
+
         const activeItem = questions[idx];
-
-        if (!activeItem) return;
-
         const isCorrect = chosen === activeItem.correct;
         if (isCorrect) currentScore++;
 
@@ -358,15 +337,21 @@ client.on('interactionCreate', async (interaction) => {
 
         await interaction.message.edit({ embeds: [evaluationEmbed], components: navigationRow.components.length ? [navigationRow] : [] }).catch(console.error);
 
-    // SCENARIO 3: Pull next card layout from cached sequence maps
     } else if (interaction.customId.startsWith('dyn_next_')) {
-        const [, nextIndexStr, nextScoreStr] = interaction.customId.split('_');
+        // FIXED ARRAY POSITION DESTRUCTURING: [ "dyn", "next", "index", "score" ]
+        const [, , nextIndexStr, nextScoreStr] = interaction.customId.split('_');
         const index = parseInt(nextIndexStr);
         const score = parseInt(nextScoreStr);
+        
+        console.log(`[DEBUG_NEXT] Parsed Variables -> Next Index: ${index}, Preserved Score: ${score}`);
+
+        // Defensive Validation Guard
+        if (isNaN(index) || isNaN(score) || !questions[index]) {
+            console.error(`[ERROR] Invalid parameters on next question click. Index: ${nextIndexStr}, Score: ${nextScoreStr}`);
+            return;
+        }
+
         const activeItem = questions[index];
-
-        if (!activeItem) return;
-
         const questionEmbed = buildQuizEmbed(activeItem, index, questions.length, score, index);
         const btnRow = new ActionRowBuilder();
         
