@@ -22,7 +22,7 @@ const client = new Client({
 
 const TOKEN = process.env.DISCORD_TOKEN;
 
-// A small map to preserve raw question banks during active text channels
+// Global memory map locked to text channel IDs
 const globalStorage = new Map();
 
 client.once('ready', () => {
@@ -49,7 +49,6 @@ client.on('messageCreate', async (message) => {
             return;
         }
 
-        // Store the parsed array using the channel's ID as the lock key
         globalStorage.set(message.channel.id, questions);
 
         const startEmbed = new EmbedBuilder()
@@ -75,18 +74,21 @@ client.on('messageCreate', async (message) => {
 client.on('interactionCreate', async (interaction) => {
     if (!interaction.isButton()) return;
 
+    // CRITICAL FIX: Instantly satisfies Discord's strict 3-second window
     try {
-        await interaction.deferReply({ ephemeral: true });
-        await interaction.deleteReply();
-    } catch (err) {}
+        await interaction.deferUpdate();
+    } catch (err) {
+        console.error("Defer update failed:", err);
+        return; 
+    }
 
     const channel = interaction.channel;
-    const questions = globalStorage.get(channel.id);
+    let questions = globalStorage.get(channel.id);
 
-    // If memory cleared, let's auto-parse the active PDF file attached in the channel history context
+    // AUTO-RESTORE MEMORY IF RENDER WOKE UP BLANK
     if (!questions || questions.length === 0) {
         try {
-            const messages = await channel.messages.fetch({ limit: 20 });
+            const messages = await channel.messages.fetch({ limit: 15 });
             const targetMessage = messages.find(m => m.attachments.first() && m.attachments.first().name.endsWith('.pdf'));
             
             if (targetMessage) {
@@ -94,24 +96,26 @@ client.on('interactionCreate', async (interaction) => {
                 const response = await axios.get(attachment.url, { responseType: 'arraybuffer' });
                 const buffer = Buffer.from(response.data);
                 const data = await pdfParse(buffer);
-                const reParsed = parseQuestions(data.text);
-                globalStorage.set(channel.id, reParsed);
-                return channel.send("🔄 **Session Restored:** Re-linking question bank from your last uploaded PDF. Please click the button one more time!");
+                questions = parseQuestions(data.text);
+                globalStorage.set(channel.id, questions);
             }
         } catch (e) {
-            console.error(e);
+            console.error("Auto-restore tracking failed:", e);
         }
-        return channel.send("⚠️ **Session Expired:** Please upload your PDF reviewer again to start a fresh study session!");
     }
 
-    // 1. START QUIZ
+    if (!questions || questions.length === 0) {
+        return channel.send("⚠️ **Session Error:** Please upload your PDF file fresh to sync the question files!");
+    }
+
+    // 1. START THE QUIZ PANEL
     if (interaction.customId === 'dyn_start_quiz') {
         const firstItem = questions[0];
         const questionEmbed = new EmbedBuilder()
             .setTitle(`📝 Question 1`)
-            .setDescription(`**${firstItem.question}**\n\n**🅰️** ${firstItem.options.A}\n**🅱️** ${firstItem.options.B}\n**🆃** ${firstItem.options.C}\n**🅳** ${firstItem.options.D}`)
+            .setDescription(`**${firstItem.question}**\n\n🅰️ ${firstItem.options.A}\n🅱️ ${firstItem.options.B}\n🆃 ${firstItem.options.C}\n🅳 ${firstItem.options.D}`)
             .setColor(0x3498db)
-            .setFooter({ text: `Total Questions: ${questions.length}` });
+            .setFooter({ text: `Total Items: ${questions.length}` });
 
         const btnRow = new ActionRowBuilder().addComponents(
             new ButtonBuilder().setCustomId(`dyn_answer_0_0_A`).setLabel('A').setStyle(ButtonStyle.Secondary),
@@ -122,7 +126,7 @@ client.on('interactionCreate', async (interaction) => {
 
         await channel.send({ embeds: [questionEmbed], components: [btnRow] });
 
-    // 2. EVALUATE CHOSEN ANSWER
+    // 2. CHECK MULTIPLE CHOICE ANSWER TAPS
     } else if (interaction.customId.startsWith('dyn_answer_')) {
         const [, indexStr, scoreStr, chosen] = interaction.customId.split('_');
         const idx = parseInt(indexStr);
@@ -161,7 +165,7 @@ client.on('interactionCreate', async (interaction) => {
 
         await channel.send({ embeds: [evaluationEmbed], components: navigationRow.components.length ? [navigationRow] : [] });
 
-    // 3. NEXT QUESTION GENERATION
+    // 3. GENERATE NEXT CARD PROMPT
     } else if (interaction.customId.startsWith('dyn_next_')) {
         const [, nextIndexStr, nextScoreStr] = interaction.customId.split('_');
         const index = parseInt(nextIndexStr);
@@ -172,7 +176,7 @@ client.on('interactionCreate', async (interaction) => {
 
         const questionEmbed = new EmbedBuilder()
             .setTitle(`📝 Question ${index + 1}`)
-            .setDescription(`**${activeItem.question}**\n\n**🅰️** ${activeItem.options.A}\n**🅱️** ${activeItem.options.B}\n**🆃** ${activeItem.options.C}\n**🅳** ${activeItem.options.D}`)
+            .setDescription(`**${activeItem.question}**\n\n🅰️ ${activeItem.options.A}\n🅱️ ${activeItem.options.B}\n🆃 ${activeItem.options.C}\n🅳 ${activeItem.options.D}`)
             .setColor(0x3498db)
             .setFooter({ text: `Score: ${score}/${questions.length}` });
 
