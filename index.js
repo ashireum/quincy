@@ -74,7 +74,7 @@ client.on('messageCreate', async (message) => {
 client.on('interactionCreate', async (interaction) => {
     if (!interaction.isButton()) return;
 
-    // Instantly freeze the 3-second timeout window
+    // Instantly acknowledge the button press to stop any timeouts
     try {
         await interaction.deferUpdate();
     } catch (err) {
@@ -124,7 +124,7 @@ client.on('interactionCreate', async (interaction) => {
             new ButtonBuilder().setCustomId(`dyn_answer_0_0_D`).setLabel('D').setStyle(ButtonStyle.Secondary)
         );
 
-        await interaction.editReply({ embeds: [questionEmbed], components: [btnRow] });
+        await interaction.message.edit({ embeds: [questionEmbed], components: [btnRow] });
 
     // 2. CHECK MULTIPLE CHOICE ANSWER TAPS
     } else if (interaction.customId.startsWith('dyn_answer_')) {
@@ -163,7 +163,7 @@ client.on('interactionCreate', async (interaction) => {
             evaluationEmbed.addFields({ name: '🏁 Finish!', value: `Final Score: ${currentScore}/${questions.length}` });
         }
 
-        await interaction.editReply({ embeds: [evaluationEmbed], components: navigationRow.components.length ? [navigationRow] : [] });
+        await interaction.message.edit({ embeds: [evaluationEmbed], components: navigationRow.components.length ? [navigationRow] : [] });
 
     // 3. GENERATE NEXT CARD PROMPT
     } else if (interaction.customId.startsWith('dyn_next_')) {
@@ -187,7 +187,7 @@ client.on('interactionCreate', async (interaction) => {
             new ButtonBuilder().setCustomId(`dyn_answer_${index}_${score}_D`).setLabel('D').setStyle(ButtonStyle.Secondary)
         );
 
-        await interaction.editReply({ embeds: [questionEmbed], components: [btnRow] });
+        await interaction.message.edit({ embeds: [questionEmbed], components: [btnRow] });
     }
 });
 
