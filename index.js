@@ -33,14 +33,14 @@ client.on('messageCreate', async (message) => {
     if (!isPDF && !isTXT) return;
 
     try {
-        const loadingMessage = await message.reply(`⏳ Reading your ${isPDF ? 'PDF' : 'Text'} file and extracting questions... Please wait!`);
+        const loadingMessage = await message.reply(`⏳ Reading your file and extracting questions... Please wait!`);
         const response = await axios.get(attachment.url, { responseType: isPDF ? 'arraybuffer' : 'text' });
         let extractedText = isPDF ? (await pdfParse(Buffer.from(response.data))).text : response.data;
         
         const questions = parseQuestions(extractedText);
 
         if (questions.length === 0) {
-            await loadingMessage.edit("❌ I couldn't extract any questions. Make sure the format matches: \n`ANSWER: “D”. text` right below option D.");
+            await loadingMessage.edit("❌ I couldn't extract any questions. Make sure your format has `ANSWER:` followed by the correct letter under each question.");
             return;
         }
 
@@ -103,7 +103,7 @@ client.on('interactionCreate', async (interaction) => {
         const firstItem = questions[0];
         const questionEmbed = new EmbedBuilder()
             .setTitle(`📝 Question 1`)
-            .setDescription(`**${firstItem.question}**\n\n**A.** ${firstItem.options.A}\n**B.** ${firstItem.options.B}\n**C.** ${firstItem.options.C}\n**D.** ${firstItem.options.D}`)
+            .setDescription(`**${firstItem.question}**\n\n**A.** ${firstItem.options.A || 'None'}\n**B.** ${firstItem.options.B || 'None'}\n**C.** ${firstItem.options.C || 'None'}\n**D.** ${firstItem.options.D || 'None'}`)
             .setColor(0x3498db)
             .setFooter({ text: `Total Items: ${questions.length}` });
 
@@ -161,7 +161,7 @@ client.on('interactionCreate', async (interaction) => {
 
         const questionEmbed = new EmbedBuilder()
             .setTitle(`📝 Question ${index + 1}`)
-            .setDescription(`**${activeItem.question}**\n\n**A.** ${activeItem.options.A}\n**B.** ${activeItem.options.B}\n**C.** ${activeItem.options.C}\n**D.** ${activeItem.options.D}`)
+            .setDescription(`**${activeItem.question}**\n\n**A.** ${activeItem.options.A || 'None'}\n**B.** ${activeItem.options.B || 'None'}\n**C.** ${activeItem.options.C || 'None'}\n**D.** ${activeItem.options.D || 'None'}`)
             .setColor(0x3498db)
             .setFooter({ text: `Score: ${score}/${questions.length}` });
 
@@ -184,29 +184,32 @@ function parseQuestions(text) {
     for (let i = 0; i < lines.length; i++) {
         const line = lines[i];
 
+        // Match question numbers (e.g., "1.", "1)")
         if (/^\d+[\.\)]/.test(line)) {
-            if (currentQuestion && currentQuestion.question && currentQuestion.options.A) {
+            if (currentQuestion && currentQuestion.question && Object.keys(currentQuestion.options).length > 0) {
                 questions.push(currentQuestion);
             }
             currentQuestion = {
                 question: line.replace(/^\d+[\.\)]\s*/, ''),
                 options: {},
                 correct: 'A', 
-                rationale: 'No specific study note provided in document.'
+                rationale: 'No specific study note provided.'
             };
             continue;
         }
 
         if (!currentQuestion) continue;
 
+        // Match choices (A, B, C, D) ignoring any heavy tab spaces
         if (/^[A-D][\.\)]/i.test(line)) {
             const letter = line[0].toUpperCase();
-            currentQuestion.options[letter] = line.replace(/^[A-D][\.\)]\s*/i, '');
+            currentQuestion.options[letter] = line.replace(/^[A-D][\.\)]\s*/i, '').trim();
             continue;
         }
 
-        if (line.toUpperCase().startsWith('ANSWER:')) {
-            const letterMatch = line.match(/ANSWER:\s*[\u201C\u201D"']([A-D])[\u201C\u201D"']/i);
+        // Cleaned up line matcher for: ANSWER: “D”. 8-16 months or ANSWER: D
+        if (line.toUpperCase().includes('ANSWER:')) {
+            const letterMatch = line.match(/ANSWER:\s*[\u201C\u201D"'\s]*([A-D])[\u201C\u201D"'\.\s]*/i);
             if (letterMatch) {
                 currentQuestion.correct = letterMatch[1].toUpperCase();
             }
@@ -214,16 +217,17 @@ function parseQuestions(text) {
         }
 
         if (line.toLowerCase().startsWith('rationale:') || line.toLowerCase().startsWith('explanation:')) {
-            currentQuestion.rationale = line.replace(/^(?:rationale|explanation):\s*/i, '');
+            currentQuestion.rationale = line.replace(/^(?:rationale|explanation):\s*/i, '').trim();
             continue;
         }
 
-        if (currentQuestion && Object.keys(currentQuestion.options).length === 0) {
+        // Handle text wrap for question title
+        if (Object.keys(currentQuestion.options).length === 0) {
             currentQuestion.question += " " + line;
         }
     }
 
-    if (currentQuestion && currentQuestion.question && currentQuestion.options.A) {
+    if (currentQuestion && currentQuestion.question && Object.keys(currentQuestion.options).length > 0) {
         questions.push(currentQuestion);
     }
 
