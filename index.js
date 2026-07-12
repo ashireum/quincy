@@ -49,7 +49,7 @@ client.on('messageCreate', async (message) => {
             return;
         }
 
-        globalStorage.set(message.channel.id, questions);
+        globalStorage.set(message.channel.id, Array.from(questions));
 
         const startEmbed = new EmbedBuilder()
             .setTitle("📚 Quiz Ready!")
@@ -74,7 +74,7 @@ client.on('messageCreate', async (message) => {
 client.on('interactionCreate', async (interaction) => {
     if (!interaction.isButton()) return;
 
-    // CRITICAL FIX: Instantly satisfies Discord's strict 3-second window
+    // Instantly freeze the 3-second timeout window
     try {
         await interaction.deferUpdate();
     } catch (err) {
@@ -113,7 +113,7 @@ client.on('interactionCreate', async (interaction) => {
         const firstItem = questions[0];
         const questionEmbed = new EmbedBuilder()
             .setTitle(`📝 Question 1`)
-            .setDescription(`**${firstItem.question}**\n\n🅰️ ${firstItem.options.A}\n🅱️ ${firstItem.options.B}\n🆃 ${firstItem.options.C}\n🅳 ${firstItem.options.D}`)
+            .setDescription(`**${firstItem.question}**\n\n🇦 ${firstItem.options.A}\n🇧 ${firstItem.options.B}\n🇨 ${firstItem.options.C}\n🇩 ${firstItem.options.D}`)
             .setColor(0x3498db)
             .setFooter({ text: `Total Items: ${questions.length}` });
 
@@ -124,7 +124,7 @@ client.on('interactionCreate', async (interaction) => {
             new ButtonBuilder().setCustomId(`dyn_answer_0_0_D`).setLabel('D').setStyle(ButtonStyle.Secondary)
         );
 
-        await channel.send({ embeds: [questionEmbed], components: [btnRow] });
+        await interaction.editReply({ embeds: [questionEmbed], components: [btnRow] });
 
     // 2. CHECK MULTIPLE CHOICE ANSWER TAPS
     } else if (interaction.customId.startsWith('dyn_answer_')) {
@@ -140,9 +140,9 @@ client.on('interactionCreate', async (interaction) => {
 
         let breakdown = "";
         for (const [key, val] of Object.entries(currentItem.options)) {
-            if (key === currentItem.correct) breakdown += `🟢 **${val} (Correct Answer)**\n`;
-            else if (key === chosen) breakdown += `🔴 **${val} (Your Pick)**\n`;
-            else breakdown += `⚪ ${val}\n`;
+            if (key === currentItem.correct) breakdown += `🟢 **${key}: ${val} (Correct Answer)**\n`;
+            else if (key === chosen) breakdown += `🔴 **${key}: ${val} (Your Pick)**\n`;
+            else breakdown += `⚪ ${key}: ${val}\n`;
         }
 
         const evaluationEmbed = new EmbedBuilder()
@@ -163,7 +163,7 @@ client.on('interactionCreate', async (interaction) => {
             evaluationEmbed.addFields({ name: '🏁 Finish!', value: `Final Score: ${currentScore}/${questions.length}` });
         }
 
-        await channel.send({ embeds: [evaluationEmbed], components: navigationRow.components.length ? [navigationRow] : [] });
+        await interaction.editReply({ embeds: [evaluationEmbed], components: navigationRow.components.length ? [navigationRow] : [] });
 
     // 3. GENERATE NEXT CARD PROMPT
     } else if (interaction.customId.startsWith('dyn_next_')) {
@@ -176,71 +176,11 @@ client.on('interactionCreate', async (interaction) => {
 
         const questionEmbed = new EmbedBuilder()
             .setTitle(`📝 Question ${index + 1}`)
-            .setDescription(`**${activeItem.question}**\n\n🅰️ ${activeItem.options.A}\n🅱️ ${activeItem.options.B}\n🆃 ${activeItem.options.C}\n🅳 ${activeItem.options.D}`)
+            .setDescription(`**${activeItem.question}**\n\n🇦 ${activeItem.options.A}\n🇧 ${activeItem.options.B}\n🇨 ${activeItem.options.C}\n🇩 ${activeItem.options.D}`)
             .setColor(0x3498db)
             .setFooter({ text: `Score: ${score}/${questions.length}` });
 
         const btnRow = new ActionRowBuilder().addComponents(
             new ButtonBuilder().setCustomId(`dyn_answer_${index}_${score}_A`).setLabel('A').setStyle(ButtonStyle.Secondary),
             new ButtonBuilder().setCustomId(`dyn_answer_${index}_${score}_B`).setLabel('B').setStyle(ButtonStyle.Secondary),
-            new ButtonBuilder().setCustomId(`dyn_answer_${index}_${score}_C`).setLabel('C').setStyle(ButtonStyle.Secondary),
-            new ButtonBuilder().setCustomId(`dyn_answer_${index}_${score}_D`).setLabel('D').setStyle(ButtonStyle.Secondary)
-        );
-
-        await channel.send({ embeds: [questionEmbed], components: [btnRow] });
-    }
-});
-
-function parseQuestions(text) {
-    const lines = text.split('\n').map(line => line.trim()).filter(line => line.length > 0);
-    const questions = [];
-    let currentQuestion = null;
-
-    for (let i = 0; i < lines.length; i++) {
-        const line = lines[i];
-
-        if (/^\d+[\.\)]/.test(line)) {
-            if (currentQuestion && currentQuestion.question && currentQuestion.options.A) {
-                questions.push(currentQuestion);
-            }
-            currentQuestion = {
-                question: line.replace(/^\d+[\.\)]\s*/, ''),
-                options: {},
-                correct: 'A', 
-                rationale: 'No specific study note provided in document.'
-            };
-            continue;
-        }
-
-        if (!currentQuestion) continue;
-
-        if (/^[A-D\u1F1E6-\u1F1E9][\.\)]/i.test(line)) {
-            const letter = line[0].toUpperCase();
-            currentQuestion.options[letter] = line.replace(/^[A-D][\.\)]\s*/i, '');
-            continue;
-        }
-
-        if (line.toLowerCase().includes('answer:') || line.toLowerCase().includes('correct answer:')) {
-            const match = line.match(/(?:answer:\s*([A-D]))/i);
-            if (match) currentQuestion.correct = match[1].toUpperCase();
-            continue;
-        }
-
-        if (line.toLowerCase().startsWith('rationale:') || line.toLowerCase().startsWith('explanation:')) {
-            currentQuestion.rationale = line.replace(/^(?:rationale|explanation):\s*/i, '');
-            continue;
-        }
-
-        if (currentQuestion && Object.keys(currentQuestion.options).length === 0) {
-            currentQuestion.question += " " + line;
-        }
-    }
-
-    if (currentQuestion && currentQuestion.question && currentQuestion.options.A) {
-        questions.push(currentQuestion);
-    }
-
-    return questions;
-}
-
-client.login(TOKEN);
+            new ButtonBuilder().setCustomId(`dyn_answer_${index}_${score}_C`).
