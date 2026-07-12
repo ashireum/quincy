@@ -49,7 +49,7 @@ client.on('messageCreate', async (message) => {
             return;
         }
 
-        globalStorage.set(message.channel.id, Array.from(questions));
+        globalStorage.set(message.channel.id, questions);
 
         const startEmbed = new EmbedBuilder()
             .setTitle("📚 Quiz Ready!")
@@ -113,7 +113,7 @@ client.on('interactionCreate', async (interaction) => {
         const firstItem = questions[0];
         const questionEmbed = new EmbedBuilder()
             .setTitle(`📝 Question 1`)
-            .setDescription(`**${firstItem.question}**\n\n🇦 ${firstItem.options.A}\n🇧 ${firstItem.options.B}\n🇨 ${firstItem.options.C}\n🇩 ${firstItem.options.D}`)
+            .setDescription(`**${firstItem.question}**\n\n**A.** ${firstItem.options.A}\n**B.** ${firstItem.options.B}\n**C.** ${firstItem.options.C}\n**D.** ${firstItem.options.D}`)
             .setColor(0x3498db)
             .setFooter({ text: `Total Items: ${questions.length}` });
 
@@ -140,14 +140,14 @@ client.on('interactionCreate', async (interaction) => {
 
         let breakdown = "";
         for (const [key, val] of Object.entries(currentItem.options)) {
-            if (key === currentItem.correct) breakdown += `🟢 **${key}: ${val} (Correct Answer)**\n`;
-            else if (key === chosen) breakdown += `🔴 **${key}: ${val} (Your Pick)**\n`;
-            else breakdown += `⚪ ${key}: ${val}\n`;
+            if (key === currentItem.correct) breakdown += `✅ **${key}. ${val} (Correct Answer)**\n`;
+            else if (key === chosen) breakdown += `❌ **${key}. ${val} (Your Pick)**\n`;
+            else breakdown += `🔹 ${key}. ${val}\n`;
         }
 
         const evaluationEmbed = new EmbedBuilder()
             .setTitle(`Question ${idx + 1} Feedback`)
-            .setDescription(`**Result:** ${isCorrect ? '✨ Correct!' : '❌ Incorrect'}\n\n${breakdown}\n**💡 Rationale/Notes:**\n${currentItem.rationale}`)
+            .setDescription(`**Result:** ${isCorrect ? '✨ Correct!' : '⚠️ Incorrect'}\n\n${breakdown}\n**💡 Rationale/Notes:**\n${currentItem.rationale}`)
             .setColor(isCorrect ? 0x2ecc71 : 0xe74c3c)
             .setFooter({ text: `Progress: ${currentScore}/${idx + 1}` });
 
@@ -176,11 +176,60 @@ client.on('interactionCreate', async (interaction) => {
 
         const questionEmbed = new EmbedBuilder()
             .setTitle(`📝 Question ${index + 1}`)
-            .setDescription(`**${activeItem.question}**\n\n🇦 ${activeItem.options.A}\n🇧 ${activeItem.options.B}\n🇨 ${activeItem.options.C}\n🇩 ${activeItem.options.D}`)
+            .setDescription(`**${activeItem.question}**\n\n**A.** ${activeItem.options.A}\n**B.** ${activeItem.options.B}\n**C.** ${activeItem.options.C}\n**D.** ${activeItem.options.D}`)
             .setColor(0x3498db)
             .setFooter({ text: `Score: ${score}/${questions.length}` });
 
         const btnRow = new ActionRowBuilder().addComponents(
             new ButtonBuilder().setCustomId(`dyn_answer_${index}_${score}_A`).setLabel('A').setStyle(ButtonStyle.Secondary),
             new ButtonBuilder().setCustomId(`dyn_answer_${index}_${score}_B`).setLabel('B').setStyle(ButtonStyle.Secondary),
-            new ButtonBuilder().setCustomId(`dyn_answer_${index}_${score}_C`).
+            new ButtonBuilder().setCustomId(`dyn_answer_${index}_${score}_C`).setLabel('C').setStyle(ButtonStyle.Secondary),
+            new ButtonBuilder().setCustomId(`dyn_answer_${index}_${score}_D`).setLabel('D').setStyle(ButtonStyle.Secondary)
+        );
+
+        await interaction.editReply({ embeds: [questionEmbed], components: [btnRow] });
+    }
+});
+
+function parseQuestions(text) {
+    const lines = text.split('\n').map(line => line.trim()).filter(line => line.length > 0);
+    const questions = [];
+    let currentQuestion = null;
+
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+
+        if (/^\d+[\.\)]/.test(line)) {
+            if (currentQuestion && currentQuestion.question && currentQuestion.options.A) {
+                questions.push(currentQuestion);
+            }
+            currentQuestion = {
+                question: line.replace(/^\d+[\.\)]\s*/, ''),
+                options: {},
+                correct: 'A', 
+                rationale: 'No specific study note provided in document.'
+            };
+            continue;
+        }
+
+        if (!currentQuestion) continue;
+
+        if (/^[A-D\u1F1E6-\u1F1E9][\.\)]/i.test(line)) {
+            const letter = line[0].toUpperCase();
+            currentQuestion.options[letter] = line.replace(/^[A-D][\.\)]\s*/i, '');
+            continue;
+        }
+
+        if (line.toLowerCase().includes('answer:') || line.toLowerCase().includes('correct answer:')) {
+            const match = line.match(/(?:answer:\s*([A-D]))/i);
+            if (match) currentQuestion.correct = match[1].toUpperCase();
+            continue;
+        }
+
+        if (line.toLowerCase().startsWith('rationale:') || line.toLowerCase().startsWith('explanation:')) {
+            currentQuestion.rationale = line.replace(/^(?:rationale|explanation):\s*/i, '');
+            continue;
+        }
+
+        if (currentQuestion && Object.keys(currentQuestion.options).length === 0) {
+            currentQuestion.question += " " + line;
