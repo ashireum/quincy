@@ -3,7 +3,7 @@ const pdfParse = require('pdf-parse');
 const axios = require('axios');
 const http = require('http');
 
-// Dummy web server to keep Render happy
+// Dummy web server to satisfy Render's port check
 const server = http.createServer((req, res) => {
     res.writeHead(200, { 'Content-Type': 'text/plain' });
     res.end('Quiz engine active!\n');
@@ -21,7 +21,9 @@ const client = new Client({
 });
 
 const TOKEN = process.env.DISCORD_TOKEN;
-let dynamicQuiz = [];
+
+// A small map to preserve raw question banks during active text channels
+const globalStorage = new Map();
 
 client.once('ready', () => {
     console.log(`🤖 Quiz Bot is online as ${client.user.tag}!`);
@@ -40,16 +42,19 @@ client.on('messageCreate', async (message) => {
         const buffer = Buffer.from(response.data);
         const data = await pdfParse(buffer);
         
-        dynamicQuiz = parseQuestions(data.text);
+        const questions = parseQuestions(data.text);
 
-        if (dynamicQuiz.length === 0) {
+        if (questions.length === 0) {
             await loadingMessage.edit("❌ I couldn't extract any questions. Make sure the PDF format has clear 'A, B, C, D' options.");
             return;
         }
 
+        // Store the parsed array using the channel's ID as the lock key
+        globalStorage.set(message.channel.id, questions);
+
         const startEmbed = new EmbedBuilder()
             .setTitle("📚 Quiz Ready!")
-            .setDescription(`Successfully extracted **${dynamicQuiz.length}** multiple choice questions from your file.\n\nClick the button below to start your review session!`)
+            .setDescription(`Successfully extracted **${questions.length}** multiple choice questions from your file.\n\nClick the button below to start your review session!`)
             .setColor(0x2ecc71);
 
         const row = new ActionRowBuilder().addComponents(
@@ -76,24 +81,37 @@ client.on('interactionCreate', async (interaction) => {
     } catch (err) {}
 
     const channel = interaction.channel;
+    const questions = globalStorage.get(channel.id);
 
-    // CRASH PROTECTION: If Render went to sleep and wiped the array memory
-    if (interaction.customId !== 'dyn_start_quiz' && dynamicQuiz.length === 0) {
-        return channel.send("⚠️ **Session Expired:** Render's free tier went to sleep and cleared the quiz cache. Please upload your PDF reviewer again to start a fresh session!");
+    // If memory cleared, let's auto-parse the active PDF file attached in the channel history context
+    if (!questions || questions.length === 0) {
+        try {
+            const messages = await channel.messages.fetch({ limit: 20 });
+            const targetMessage = messages.find(m => m.attachments.first() && m.attachments.first().name.endsWith('.pdf'));
+            
+            if (targetMessage) {
+                const attachment = targetMessage.attachments.first();
+                const response = await axios.get(attachment.url, { responseType: 'arraybuffer' });
+                const buffer = Buffer.from(response.data);
+                const data = await pdfParse(buffer);
+                const reParsed = parseQuestions(data.text);
+                globalStorage.set(channel.id, reParsed);
+                return channel.send("🔄 **Session Restored:** Re-linking question bank from your last uploaded PDF. Please click the button one more time!");
+            }
+        } catch (e) {
+            console.error(e);
+        }
+        return channel.send("⚠️ **Session Expired:** Please upload your PDF reviewer again to start a fresh study session!");
     }
 
     // 1. START QUIZ
     if (interaction.customId === 'dyn_start_quiz') {
-        if (dynamicQuiz.length === 0) {
-            return channel.send("⚠️ Quiz data is empty. Please re-upload your PDF file!");
-        }
-
-        const firstItem = dynamicQuiz[0];
+        const firstItem = questions[0];
         const questionEmbed = new EmbedBuilder()
             .setTitle(`📝 Question 1`)
-            .setDescription(`**${firstItem.question}**\n\n🅰️ ${firstItem.options.A}\n🅱️ ${firstItem.options.B}\n🆃 ${firstItem.options.C}\n🅳 ${firstItem.options.D}`)
+            .setDescription(`**${firstItem.question}**\n\n**🅰️** ${firstItem.options.A}\n**🅱️** ${firstItem.options.B}\n**🆃** ${firstItem.options.C}\n**🅳** ${firstItem.options.D}`)
             .setColor(0x3498db)
-            .setFooter({ text: `Score: 0/${dynamicQuiz.length}` });
+            .setFooter({ text: `Total Questions: ${questions.length}` });
 
         const btnRow = new ActionRowBuilder().addComponents(
             new ButtonBuilder().setCustomId(`dyn_answer_0_0_A`).setLabel('A').setStyle(ButtonStyle.Secondary),
@@ -109,11 +127,9 @@ client.on('interactionCreate', async (interaction) => {
         const [, indexStr, scoreStr, chosen] = interaction.customId.split('_');
         const idx = parseInt(indexStr);
         let currentScore = parseInt(scoreStr);
-        const currentItem = dynamicQuiz[idx];
+        const currentItem = questions[idx];
 
-        if (!currentItem) {
-            return channel.send("⚠️ Missing question data. Please re-upload your PDF.");
-        }
+        if (!currentItem) return;
 
         const isCorrect = chosen === currentItem.correct;
         if (isCorrect) currentScore++;
@@ -132,7 +148,7 @@ client.on('interactionCreate', async (interaction) => {
             .setFooter({ text: `Progress: ${currentScore}/${idx + 1}` });
 
         const navigationRow = new ActionRowBuilder();
-        if (idx + 1 < dynamicQuiz.length) {
+        if (idx + 1 < questions.length) {
             navigationRow.addComponents(
                 new ButtonBuilder()
                     .setCustomId(`dyn_next_${idx + 1}_${currentScore}`)
@@ -140,7 +156,7 @@ client.on('interactionCreate', async (interaction) => {
                     .setStyle(ButtonStyle.Primary)
             );
         } else {
-            evaluationEmbed.addFields({ name: '🏁 Finish!', value: `Final Score: ${currentScore}/${dynamicQuiz.length}` });
+            evaluationEmbed.addFields({ name: '🏁 Finish!', value: `Final Score: ${currentScore}/${questions.length}` });
         }
 
         await channel.send({ embeds: [evaluationEmbed], components: navigationRow.components.length ? [navigationRow] : [] });
@@ -150,17 +166,15 @@ client.on('interactionCreate', async (interaction) => {
         const [, nextIndexStr, nextScoreStr] = interaction.customId.split('_');
         const index = parseInt(nextIndexStr);
         const score = parseInt(nextScoreStr);
-        const activeItem = dynamicQuiz[index];
+        const activeItem = questions[index];
         
-        if (!activeItem) {
-            return channel.send("⚠️ Question data unavailable. Please re-upload your PDF.");
-        }
+        if (!activeItem) return;
 
         const questionEmbed = new EmbedBuilder()
             .setTitle(`📝 Question ${index + 1}`)
-            .setDescription(`**${activeItem.question}**\n\n🅰️ ${activeItem.options.A}\n🅱️ ${activeItem.options.B}\n🆃 ${activeItem.options.C}\n🅳 ${activeItem.options.D}`)
+            .setDescription(`**${activeItem.question}**\n\n**🅰️** ${activeItem.options.A}\n**🅱️** ${activeItem.options.B}\n**🆃** ${activeItem.options.C}\n**🅳** ${activeItem.options.D}`)
             .setColor(0x3498db)
-            .setFooter({ text: `Score: ${score}/${dynamicQuiz.length}` });
+            .setFooter({ text: `Score: ${score}/${questions.length}` });
 
         const btnRow = new ActionRowBuilder().addComponents(
             new ButtonBuilder().setCustomId(`dyn_answer_${index}_${score}_A`).setLabel('A').setStyle(ButtonStyle.Secondary),
