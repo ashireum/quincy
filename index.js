@@ -33,19 +33,30 @@ client.on('messageCreate', async (message) => {
     if (message.author.bot) return;
 
     const attachment = message.attachments.first();
-    if (!attachment || !attachment.name.endsWith('.pdf')) return;
+    if (!attachment) return;
+    
+    const isPDF = attachment.name.endsWith('.pdf');
+    const isTXT = attachment.name.endsWith('.txt');
+    if (!isPDF && !isTXT) return;
 
     try {
-        const loadingMessage = await message.reply("⏳ Reading your PDF and extracting multiple choice questions... Please wait!");
+        const loadingMessage = await message.reply(`⏳ Reading your ${isPDF ? 'PDF' : 'Text'} file and extracting questions... Please wait!`);
 
-        const response = await axios.get(attachment.url, { responseType: 'arraybuffer' });
-        const buffer = Buffer.from(response.data);
-        const data = await pdfParse(buffer);
+        const response = await axios.get(attachment.url, { responseType: isPDF ? 'arraybuffer' : 'text' });
+        let extractedText = "";
+
+        if (isPDF) {
+            const buffer = Buffer.from(response.data);
+            const data = await pdfParse(buffer);
+            extractedText = data.text;
+        } else {
+            extractedText = response.data;
+        }
         
-        const questions = parseQuestions(data.text);
+        const questions = parseQuestions(extractedText);
 
         if (questions.length === 0) {
-            await loadingMessage.edit("❌ I couldn't extract any questions. Make sure the PDF format has clear 'A, B, C, D' options.");
+            await loadingMessage.edit("❌ I couldn't extract any questions. Make sure the format matches: \n`ANSWER: “D”. text` right below option D.");
             return;
         }
 
@@ -67,14 +78,13 @@ client.on('messageCreate', async (message) => {
 
     } catch (error) {
         console.error(error);
-        message.reply("❌ An error occurred while parsing the PDF file.");
+        message.reply("❌ An error occurred while parsing the file.");
     }
 });
 
 client.on('interactionCreate', async (interaction) => {
     if (!interaction.isButton()) return;
 
-    // Instantly acknowledge the button press to stop any timeouts
     try {
         await interaction.deferUpdate();
     } catch (err) {
@@ -85,18 +95,29 @@ client.on('interactionCreate', async (interaction) => {
     const channel = interaction.channel;
     let questions = globalStorage.get(channel.id);
 
-    // AUTO-RESTORE MEMORY IF RENDER WOKE UP BLANK
+    // AUTO-RESTORE MEMORY BACKUP PLAN
     if (!questions || questions.length === 0) {
         try {
             const messages = await channel.messages.fetch({ limit: 15 });
-            const targetMessage = messages.find(m => m.attachments.first() && m.attachments.first().name.endsWith('.pdf'));
+            const targetMessage = messages.find(m => {
+                const att = m.attachments.first();
+                return att && (att.name.endsWith('.pdf') || att.name.endsWith('.txt'));
+            });
             
             if (targetMessage) {
                 const attachment = targetMessage.attachments.first();
-                const response = await axios.get(attachment.url, { responseType: 'arraybuffer' });
-                const buffer = Buffer.from(response.data);
-                const data = await pdfParse(buffer);
-                questions = parseQuestions(data.text);
+                const isPDF = attachment.name.endsWith('.pdf');
+                const response = await axios.get(attachment.url, { responseType: isPDF ? 'arraybuffer' : 'text' });
+                let extractedText = "";
+                
+                if (isPDF) {
+                    const buffer = Buffer.from(response.data);
+                    const data = await pdfParse(buffer);
+                    extractedText = data.text;
+                } else {
+                    extractedText = response.data;
+                }
+                questions = parseQuestions(extractedText);
                 globalStorage.set(channel.id, questions);
             }
         } catch (e) {
@@ -105,7 +126,7 @@ client.on('interactionCreate', async (interaction) => {
     }
 
     if (!questions || questions.length === 0) {
-        return channel.send("⚠️ **Session Error:** Please upload your PDF file fresh to sync the question files!");
+        return channel.send("⚠️ **Session Error:** Please upload your file fresh to sync the question tracking!");
     }
 
     // 1. START THE QUIZ PANEL
@@ -199,6 +220,7 @@ function parseQuestions(text) {
     for (let i = 0; i < lines.length; i++) {
         const line = lines[i];
 
+        // Detects Question Line (e.g., "1. Question text")
         if (/^\d+[\.\)]/.test(line)) {
             if (currentQuestion && currentQuestion.question && currentQuestion.options.A) {
                 questions.push(currentQuestion);
@@ -214,33 +236,27 @@ function parseQuestions(text) {
 
         if (!currentQuestion) continue;
 
-        if (/^[A-D\u1F1E6-\u1F1E9][\.\)]/i.test(line)) {
+        // Detects Option Lines (A, B, C, D)
+        if (/^[A-D][\.\)]/i.test(line)) {
             const letter = line[0].toUpperCase();
             currentQuestion.options[letter] = line.replace(/^[A-D][\.\)]\s*/i, '');
             continue;
         }
 
-        if (line.toLowerCase().includes('answer:') || line.toLowerCase().includes('correct answer:')) {
-            const match = line.match(/(?:answer:\s*([A-D]))/i);
-            if (match) currentQuestion.correct = match[1].toUpperCase();
+        // Matches: ANSWER: “D”. 8-16 months OR ANSWER: "D". text
+        if (line.toUpperCase().startsWith('ANSWER:')) {
+            const letterMatch = line.match(/ANSWER:\s*[\u201C\u201D"']([A-D])[\u201C\u201D"']/i);
+            if (letterMatch) {
+                currentQuestion.correct = letterMatch[1].toUpperCase();
+            }
             continue;
         }
 
+        // Extract Rationale notes if any exist
         if (line.toLowerCase().startsWith('rationale:') || line.toLowerCase().startsWith('explanation:')) {
             currentQuestion.rationale = line.replace(/^(?:rationale|explanation):\s*/i, '');
             continue;
         }
 
-        if (currentQuestion && Object.keys(currentQuestion.options).length === 0) {
-            currentQuestion.question += " " + line;
-        }
-    }
-
-    if (currentQuestion && currentQuestion.question && currentQuestion.options.A) {
-        questions.push(currentQuestion);
-    }
-
-    return questions;
-}
-
-client.login(TOKEN);
+        // Catch multi-line questions
+        if (currentQuestion && Object.keys(currentQuestion.options).length
