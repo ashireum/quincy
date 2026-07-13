@@ -1,4 +1,4 @@
-const { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, REST, Routes, ApplicationCommandOptionType, PermissionFlagsBits } = require('discord.js');
+const { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, REST, Routes, ApplicationCommandOptionType } = require('discord.js');
 const pdfParse = require('pdf-parse');
 const axios = require('axios');
 const http = require('http');
@@ -133,9 +133,9 @@ function buildQuizEmbed(item, index, total, score, answeredCount, chosen = null)
     const regionalIndicators = { A: '🇦', B: '🇧', C: '🇨', D: '🇩' };
 
     if (!chosen) {
-        embed.setTitle(`📝 Question ${index + 1} of ${total}`)
+        embed.setTitle(`... Question ${index + 1} of ${total}`)
             .setDescription(`**${item.question}**`)
-            .setFooter({ text: `Question ${index + 1}/${total} • Current Score: ${score}/${answeredCount}` });
+            .setFooter({ text: `Question ${index + 1}/${total} \u2022 Current Score: ${score}/${answeredCount}` });
 
         item.originalOrder.forEach(letter => {
             if (item.options[letter]) {
@@ -146,18 +146,18 @@ function buildQuizEmbed(item, index, total, score, answeredCount, chosen = null)
         const isCorrect = chosen === item.correct;
         embed.setColor(isCorrect ? 0x2ecc71 : 0xe74c3c)
             .setTitle(`Question ${index + 1} Feedback`)
-            .setDescription(`**Your Verdict:** ${isCorrect ? '✨ Correct!' : '⚠️ Incorrect'}\n\n**Question:**\n${item.question}`)
-            .setFooter({ text: `Progress: ${index + 1} of ${total} • Score: ${score} Correct` });
+            .setDescription(`**Your Verdict:** ${isCorrect ? '\u2728 Correct!' : '\u26A0\uFE0F Incorrect'}\n\n**Question:**\n${item.question}`)
+            .setFooter({ text: `Progress: ${index + 1} of ${total} \u2022 Score: ${score} Correct` });
 
         item.originalOrder.forEach(letter => {
             let label = `${regionalIndicators[letter]} Option ${letter}`;
-            if (letter === item.correct) label += ' ✅ (Correct)';
-            else if (letter === chosen) label += ' ❌ (Your Pick)';
+            if (letter === item.correct) label += ' \u2705 (Correct)';
+            else if (letter === chosen) label += ' \u274C (Your Pick)';
             if (item.options[letter]) {
                 embed.addFields({ name: label, value: item.options[letter], inline: false });
             }
         });
-        embed.addFields({ name: '💡 Rationale & Clinical Notes', value: item.rationale, inline: false });
+        embed.addFields({ name: '\uD83D\uDCA1 Rationale & Clinical Notes', value: item.rationale, inline: false });
     }
     return embed;
 }
@@ -182,7 +182,7 @@ client.once('ready', async () => {
         {
             name: 'quiz',
             description: 'Host a public review room. Only server owners/admins can launch this.',
-            default_member_permissions: PermissionFlagsBits.ManageGuild.toString(),
+            default_member_permissions: "32", // Safe Bitfield String for 'ManageGuild' (prevents build engine crashes)
             options: [
                 {
                     name: 'reviewer',
@@ -271,7 +271,7 @@ client.on('interactionCreate', async (interaction) => {
                     .setFooter({ text: "Progress loops are strictly individual and isolated from public view." });
 
                 const joinRow = new ActionRowBuilder().addComponents(
-                    new ButtonBuilder().setCustomId('room_join_portal').setLabel('Join Quiz Module 🎯').setStyle(ButtonStyle.Primary)
+                    new ButtonBuilder().setCustomId('room_join_portal').setLabel('Join Quiz Module \uD83C\uDFAF').setStyle(ButtonStyle.Primary)
                 );
 
                 await interaction.channel.send({ embeds: [roomEmbed], components: [joinRow] });
@@ -299,4 +299,24 @@ client.on('interactionCreate', async (interaction) => {
         if (SHUFFLE_QUESTIONS) assignedQuestions = shuffleArray(assignedQuestions);
 
         const userSessionKey = `${interaction.user.id}_${channel.id}`;
-        globalStorage.set(userSessionKey, { userId: interaction.user.id, questions: assignedQuestions
+        globalStorage.set(userSessionKey, { userId: interaction.user.id, questions: assignedQuestions });
+
+        const activeItem = assignedQuestions[0];
+        const initialEmbed = buildQuizEmbed(activeItem, 0, assignedQuestions.length, 0, 0);
+        const choiceRow = new ActionRowBuilder();
+        
+        activeItem.originalOrder.forEach(letter => {
+            if (activeItem.options[letter]) {
+                choiceRow.addComponents(new ButtonBuilder().setCustomId(`dyn_answer_0_0_${letter}`).setLabel(letter).setStyle(ButtonStyle.Secondary));
+            }
+        });
+
+        return await interaction.reply({ embeds: [initialEmbed], components: [choiceRow], ephemeral: true });
+    }
+
+    // --- STEP 2: RESOLVE PERSISTENT QUIZ LOOPS ---
+    const userSessionKey = `${interaction.user.id}_${channel.id}`;
+    let session = globalStorage.get(userSessionKey);
+
+    if (!session || !session.questions || session.questions.length === 0) {
+        return interaction.reply({ content: "
