@@ -3,27 +3,32 @@ const pdfParse = require('pdf-parse');
 const axios = require('axios');
 const http = require('http');
 
+// --- GLOBAL ERROR PROTECTION LAYER (Prevents Render Process Crashes) ---
+process.on('uncaughtException', (error) => {
+    console.error('🚨 CRITICAL UNCAUGHT EXCEPTION AUDITED:', error.stack || error);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+    console.error('🚨 UNHANDLED PROMISE REJECTION AUDITED AT:', promise, 'REASON:', reason);
+});
+
 const SHUFFLE_QUESTIONS = false;
 const SHUFFLE_CHOICES = false;
 
-// Dummy web server for hosting checks
-const server = http.createServer((req, res) => {
-    res.writeHead(200, { 'Content-Type': 'text/plain' });
-    res.end('Quiz engine active!\n');
-});
-server.listen(process.env.PORT || 3000, () => {
-    console.log('🌐 Web listener online');
-});
-
-const client = new Client({
-    intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages]
-});
-
+// --- ENVIRONMENT VALIDATION LAYER ---
+console.log('⏳ Validating system environment variables...');
 const TOKEN = process.env.DISCORD_TOKEN;
+const PORT = process.env.PORT || 3000;
 
-// Memory storage blocks
-const globalStorage = new Map(); // Stores user-specific isolated runtime decks
-const sharedRooms = new Map();   // Stores host-uploaded public room decks
+if (!TOKEN) {
+    console.error('❌ DEPLOYMENT CRITICAL ERROR: "DISCORD_TOKEN" is missing from your environment variables.');
+    process.exit(1);
+}
+console.log('✅ Environment parameters verified successfully.');
+
+// --- RUNTIME MEMORY STORAGE REGISTRIES ---
+const globalStorage = new Map(); 
+const sharedRooms = new Map();   
 
 // --- PRE-COMPILED PARSER REGEXES ---
 const QUESTION_START_REGEX = /^(?:(?:Question|Q|No\.)\s*)?(\d+)(?:[\.\)]|(?:\s+))?/i;
@@ -130,41 +135,46 @@ function parseQuestions(text) {
 
 function buildQuizEmbed(item, index, total, score, answeredCount, chosen = null) {
     const embed = new EmbedBuilder().setColor(0x3498db);
-    const regionalIndicators = { A: '🇦', B: '🇧', C: '🇨', D: '🇩' };
+    const regionalIndicators = { A: 'A', B: 'B', C: 'C', D: 'D' };
 
     if (!chosen) {
-        embed.setTitle(`📝 Question ${index + 1} of ${total}`)
+        embed.setTitle(`Question ${index + 1} of ${total}`)
             .setDescription(`**${item.question}**`)
             .setFooter({ text: `Question ${index + 1}/${total} • Current Score: ${score}/${answeredCount}` });
 
         item.originalOrder.forEach(letter => {
             if (item.options[letter]) {
-                embed.addFields({ name: `${regionalIndicators[letter]} Option ${letter}`, value: item.options[letter], inline: false });
+                embed.addFields({ name: `Option ${letter}`, value: item.options[letter], inline: false });
             }
         });
     } else {
         const isCorrect = chosen === item.correct;
         embed.setColor(isCorrect ? 0x2ecc71 : 0xe74c3c)
             .setTitle(`Question ${index + 1} Feedback`)
-            .setDescription(`**Your Verdict:** ${isCorrect ? '✨ Correct!' : '⚠️ Incorrect'}\n\n**Question:**\n${item.question}`)
+            .setDescription(`**Your Verdict:** ${isCorrect ? 'Correct!' : 'Incorrect'}\n\n**Question:**\n${item.question}`)
             .setFooter({ text: `Progress: ${index + 1} of ${total} • Score: ${score} Correct` });
 
         item.originalOrder.forEach(letter => {
-            let label = `${regionalIndicators[letter]} Option ${letter}`;
-            if (letter === item.correct) label += ' ✅ (Correct)';
-            else if (letter === chosen) label += ' ❌ (Your Pick)';
+            let label = `Option ${letter}`;
+            if (letter === item.correct) label += ' (Correct)';
+            else if (letter === chosen) label += ' (Your Pick)';
             if (item.options[letter]) {
                 embed.addFields({ name: label, value: item.options[letter], inline: false });
             }
         });
-        embed.addFields({ name: '💡 Rationale & Clinical Notes', value: item.rationale, inline: false });
+        embed.addFields({ name: 'Rationale & Clinical Notes', value: item.rationale, inline: false });
     }
     return embed;
 }
 
-// --- AUTOMATIC COMMAND REGISTRATION ON BOOT ---
+// --- INITIALIZE CLIENT INSTANCE ---
+const client = new Client({
+    intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages]
+});
+
+// --- AUTOMATIC COMMAND REGISTRATION ON BOOT (Safely Wrapped to Prevent Deploy Freezes) ---
 client.once('ready', async () => {
-    console.log(`🤖 Quiz Bot is online as ${client.user.tag}!`);
+    console.log(`🤖 Discord Gateway Connected! Active session user: ${client.user.tag}`);
 
     const commands = [
         {
@@ -182,7 +192,7 @@ client.once('ready', async () => {
         {
             name: 'quiz',
             description: 'Host a public review room. Only server owners/admins can launch this.',
-            default_member_permissions: "32", // Safe Bitfield String for 'ManageGuild' (prevents build engine crashes)
+            default_member_permissions: "32", 
             options: [
                 {
                     name: 'reviewer',
@@ -196,126 +206,194 @@ client.once('ready', async () => {
 
     const rest = new REST({ version: '10' }).setToken(TOKEN);
     try {
-        console.log('⏳ Synchronizing dual application command systems...');
+        console.log('⏳ Rest Routing: Synchronizing slash command configurations...');
         await rest.put(Routes.applicationCommands(client.user.id), { body: commands });
-        console.log('✅ Global slash command routing frameworks active.');
+        console.log('✅ Success: Global application slash commands registered.');
     } catch (error) {
-        console.error('Registration framework collision:', error);
+        console.error('⚠️ Registration Error Warning: Failed to sync commands, using cached schema:', error);
     }
 });
 
 // --- INTERACTION HANDLING HUB ---
 client.on('interactionCreate', async (interaction) => {
-    
-    // A. HANDLE COMMAND INVOCATIONS
-    if (interaction.isChatInputCommand()) {
-        const attachment = interaction.options.getAttachment('reviewer');
-        if (!attachment) return interaction.reply({ content: '❌ Missing file attachment parameters.', ephemeral: true });
+    try {
+        if (interaction.isChatInputCommand()) {
+            const attachment = interaction.options.getAttachment('reviewer');
+            if (!attachment) return await interaction.reply({ content: '❌ Missing file attachment parameters.', ephemeral: true }).catch(console.error);
 
-        const isPDF = attachment.name.endsWith('.pdf');
-        const isTXT = attachment.name.endsWith('.txt');
-        if (!isPDF && !isTXT) {
-            return interaction.reply({ content: '❌ Invalid format structure. Please supply .pdf or .txt items.', ephemeral: true });
-        }
-
-        // --- OPTION 1: PRIVATE MODE (/startquiz) ---
-        if (interaction.commandName === 'startquiz') {
-            await interaction.deferReply({ ephemeral: true });
-
-            try {
-                const response = await axios.get(attachment.url, { responseType: isPDF ? 'arraybuffer' : 'text', timeout: 15000 });
-                let extractedText = isPDF ? (await pdfParse(Buffer.from(response.data))).text : response.data;
-                let questions = parseQuestions(extractedText);
-                
-                if (questions.length === 0) return await interaction.editReply('❌ **Parsing Failure:** No cleanly structured items detected.');
-                if (SHUFFLE_QUESTIONS) questions = shuffleArray(questions);
-
-                const userSessionKey = `${interaction.user.id}_${interaction.channel.id}`;
-                globalStorage.set(userSessionKey, { userId: interaction.user.id, questions });
-
-                const activeItem = questions[0];
-                const firstQuestionEmbed = buildQuizEmbed(activeItem, 0, questions.length, 0, 0);
-                const btnRow = new ActionRowBuilder();
-                
-                activeItem.originalOrder.forEach(letter => {
-                    if (activeItem.options[letter]) {
-                        btnRow.addComponents(new ButtonBuilder().setCustomId(`dyn_answer_0_0_${letter}`).setLabel(letter).setStyle(ButtonStyle.Secondary));
-                    }
-                });
-
-                await interaction.editReply({ embeds: [firstQuestionEmbed], components: [btnRow] });
-            } catch (error) {
-                console.error(error);
-                await interaction.editReply('❌ **System Error:** Failed to cleanly ingest private data frames.');
+            const isPDF = attachment.name.endsWith('.pdf');
+            const isTXT = attachment.name.endsWith('.txt');
+            if (!isPDF && !isTXT) {
+                return await interaction.reply({ content: '❌ Invalid format structure. Please supply .pdf or .txt items.', ephemeral: true }).catch(console.error);
             }
-        }
 
-        // --- OPTION 2: HOST MODE (/quiz) ---
-        if (interaction.commandName === 'quiz') {
-            await interaction.deferReply({ ephemeral: true });
+            if (interaction.commandName === 'startquiz') {
+                await interaction.deferReply({ ephemeral: true }).catch(console.error);
 
-            try {
-                const response = await axios.get(attachment.url, { responseType: isPDF ? 'arraybuffer' : 'text', timeout: 15000 });
-                let extractedText = isPDF ? (await pdfParse(Buffer.from(response.data))).text : response.data;
-                let questions = parseQuestions(extractedText);
-                
-                if (questions.length === 0) return await interaction.editReply("❌ **Parsing Failure:** Couldn't map structured content patterns.");
+                try {
+                    const response = await axios.get(attachment.url, { responseType: isPDF ? 'arraybuffer' : 'text', timeout: 15000 });
+                    let extractedText = isPDF ? (await pdfParse(Buffer.from(response.data))).text : response.data;
+                    let questions = parseQuestions(extractedText);
+                    
+                    if (questions.length === 0) return await interaction.editReply('❌ **Parsing Failure:** No cleanly structured items detected.').catch(console.error);
+                    if (SHUFFLE_QUESTIONS) questions = shuffleArray(questions);
 
-                sharedRooms.set(interaction.channel.id, { questions });
-                await interaction.deleteReply();
+                    const userSessionKey = `${interaction.user.id}_${interaction.channel.id}`;
+                    globalStorage.set(userSessionKey, { userId: interaction.user.id, questions });
 
-                const roomEmbed = new EmbedBuilder()
-                    .setTitle('🎯 Active Review Deck Initialized!')
-                    .setDescription(`**Host:** ${interaction.user}\n**Operational Items:** ${questions.length} questions loaded.\n\nClick the invitation portal switch below to claim your private instance tracking profile.`)
-                    .setColor(0x9b59b6)
-                    .setFooter({ text: 'Progress loops are strictly individual and isolated from public view.' });
+                    const activeItem = questions[0];
+                    const firstQuestionEmbed = buildQuizEmbed(activeItem, 0, questions.length, 0, 0);
+                    const btnRow = new ActionRowBuilder();
+                    
+                    activeItem.originalOrder.forEach(letter => {
+                        if (activeItem.options[letter]) {
+                            btnRow.addComponents(new ButtonBuilder().setCustomId(`dyn_answer_0_0_${letter}`).setLabel(letter).setStyle(ButtonStyle.Secondary));
+                        }
+                    });
 
-                const joinRow = new ActionRowBuilder().addComponents(
-                    new ButtonBuilder().setCustomId('room_join_portal').setLabel('Join Quiz Module 🎯').setStyle(ButtonStyle.Primary)
-                );
-
-                await interaction.channel.send({ embeds: [roomEmbed], components: [joinRow] });
-            } catch (error) {
-                console.error(error);
-                await interaction.editReply('❌ **System Error:** Shared buffer indexing failure.').catch(() => {});
+                    await interaction.editReply({ embeds: [firstQuestionEmbed], components: [btnRow] }).catch(console.error);
+                } catch (error) {
+                    console.error('Error handling /startquiz data ingestion:', error);
+                    await interaction.editReply('❌ **System Error:** Failed to cleanly ingest private data frames.').catch(console.error);
+                }
             }
+
+            if (interaction.commandName === 'quiz') {
+                await interaction.deferReply({ ephemeral: true }).catch(console.error);
+
+                try {
+                    const response = await axios.get(attachment.url, { responseType: isPDF ? 'arraybuffer' : 'text', timeout: 15000 });
+                    let extractedText = isPDF ? (await pdfParse(Buffer.from(response.data))).text : response.data;
+                    let questions = parseQuestions(extractedText);
+                    
+                    if (questions.length === 0) return await interaction.editReply("❌ **Parsing Failure:** Couldn't map structured content patterns.").catch(console.error);
+
+                    sharedRooms.set(interaction.channel.id, { questions });
+                    await interaction.deleteReply().catch(console.error);
+
+                    const roomEmbed = new EmbedBuilder()
+                        .setTitle('🎯 Active Review Deck Initialized!')
+                        .setDescription(`**Host:** ${interaction.user}\n**Operational Items:** ${questions.length} questions loaded.\n\nClick the invitation portal switch below to claim your private instance tracking profile.`)
+                        .setColor(0x9b59b6)
+                        .setFooter({ text: 'Progress loops are strictly individual and isolated from public view.' });
+
+                    const joinRow = new ActionRowBuilder().addComponents(
+                        new ButtonBuilder().setCustomId('room_join_portal').setLabel('Join Quiz Module 🎯').setStyle(ButtonStyle.Primary)
+                    );
+
+                    await interaction.channel.send({ embeds: [roomEmbed], components: [joinRow] }).catch(console.error);
+                } catch (error) {
+                    console.error('Error handling public room init:', error);
+                    await interaction.editReply('❌ **System Error:** Shared buffer indexing failure.').catch(console.error);
+                }
+            }
+            return;
         }
-        return;
-    }
 
-    // B. HANDLE ALL BUTTON ACTIONS
-    if (!interaction.isButton()) return;
+        if (!interaction.isButton()) return;
+        const channel = interaction.channel;
 
-    const channel = interaction.channel;
+        if (interaction.customId === 'room_join_portal') {
+            const roomData = sharedRooms.get(channel.id);
+            if (!roomData || !roomData.questions) {
+                return await interaction.reply({ content: '⚠️ **Room Expired:** The host deck has left the memory registry. Please rebuild.', ephemeral: true }).catch(console.error);
+            }
 
-    // --- STEP 1: RESOLVE THE PUBLIC ROOM PORTAL CLICKS ---
-    if (interaction.customId === 'room_join_portal') {
-        const roomData = sharedRooms.get(channel.id);
-        if (!roomData || !roomData.questions) {
-            return interaction.reply({ content: '⚠️ **Room Expired:** The host deck has left the memory registry. Please rebuild.', ephemeral: true });
+            let assignedQuestions = [...roomData.questions];
+            if (SHUFFLE_QUESTIONS) assignedQuestions = shuffleArray(assignedQuestions);
+
+            const userSessionKey = `${interaction.user.id}_${channel.id}`;
+            globalStorage.set(userSessionKey, { userId: interaction.user.id, questions: assignedQuestions });
+
+            const activeItem = assignedQuestions[0];
+            const initialEmbed = buildQuizEmbed(activeItem, 0, assignedQuestions.length, 0, 0);
+            const choiceRow = new ActionRowBuilder();
+            
+            activeItem.originalOrder.forEach(letter => {
+                if (activeItem.options[letter]) {
+                    choiceRow.addComponents(new ButtonBuilder().setCustomId(`dyn_answer_0_0_${letter}`).setLabel(letter).setStyle(ButtonStyle.Secondary));
+                }
+            });
+
+            return await interaction.reply({ embeds: [initialEmbed], components: [choiceRow], ephemeral: true }).catch(console.error);
         }
-
-        let assignedQuestions = [...roomData.questions];
-        if (SHUFFLE_QUESTIONS) assignedQuestions = shuffleArray(assignedQuestions);
 
         const userSessionKey = `${interaction.user.id}_${channel.id}`;
-        globalStorage.set(userSessionKey, { userId: interaction.user.id, questions: assignedQuestions });
+        let session = globalStorage.get(userSessionKey);
 
-        const activeItem = assignedQuestions[0];
-        const initialEmbed = buildQuizEmbed(activeItem, 0, assignedQuestions.length, 0, 0);
-        const choiceRow = new ActionRowBuilder();
-        
-        activeItem.originalOrder.forEach(letter => {
-            if (activeItem.options[letter]) {
-                choiceRow.addComponents(new ButtonBuilder().setCustomId(`dyn_answer_0_0_${letter}`).setLabel(letter).setStyle(ButtonStyle.Secondary));
+        if (!session || !session.questions || session.questions.length === 0) {
+            return await interaction.reply({ content: '⚠️ **Session Inactive:** Select an open portal entry button or activate /startquiz directly.', ephemeral: true }).catch(console.error);
+        }
+
+        try {
+            await interaction.deferUpdate();
+        } catch (err) {
+            console.error('Interaction runtime race exception captured:', err);
+            return;
+        }
+
+        const questions = session.questions;
+
+        if (interaction.customId.startsWith('dyn_answer_')) {
+            const [, , indexStr, scoreStr, chosen] = interaction.customId.split('_');
+            const idx = parseInt(indexStr);
+            let currentScore = parseInt(scoreStr);
+
+            if (isNaN(idx) || isNaN(currentScore) || !questions[idx] || !chosen) return;
+
+            const activeItem = questions[idx];
+            const isCorrect = chosen === activeItem.correct;
+            if (isCorrect) currentScore++;
+
+            const evaluationEmbed = buildQuizEmbed(activeItem, idx, questions.length, currentScore, idx + 1, chosen);
+            const navigationRow = new ActionRowBuilder();
+
+            if (idx + 1 < questions.length) {
+                navigationRow.addComponents(
+                    new ButtonBuilder().setCustomId(`dyn_next_${idx + 1}_${currentScore}`).setLabel('Next Question ➡️').setStyle(ButtonStyle.Primary)
+                );
+            } else {
+                evaluationEmbed.addFields({ name: '🏁 Deck Completed!', value: `📈 Private Metric Result: **${currentScore} / ${questions.length}** (${Math.round((currentScore / questions.length) * 100)}%)` });
+                globalStorage.delete(userSessionKey);
             }
-        });
+            await interaction.message.edit({ embeds: [evaluationEmbed], components: navigationRow.components.length ? [navigationRow] : [] }).catch(console.error);
 
-        return await interaction.reply({ embeds: [initialEmbed], components: [choiceRow], ephemeral: true });
+        } else if (interaction.customId.startsWith('dyn_next_')) {
+            const [, , nextIndexStr, nextScoreStr] = interaction.customId.split('_');
+            const index = parseInt(nextIndexStr);
+            const score = parseInt(nextScoreStr);
+            const activeItem = questions[index];
+
+            if (isNaN(index) || isNaN(score) || !activeItem) return;
+
+            const questionEmbed = buildQuizEmbed(activeItem, index, questions.length, score, index);
+            const btnRow = new ActionRowBuilder();
+            activeItem.originalOrder.forEach(letter => {
+                if (activeItem.options[letter]) {
+                    btnRow.addComponents(new ButtonBuilder().setCustomId(`dyn_answer_${index}_${score}_${letter}`).setLabel(letter).setStyle(ButtonStyle.Secondary));
+                }
+            });
+            await interaction.message.edit({ embeds: [questionEmbed], components: [btnRow] }).catch(console.error);
+        }
+    } catch (globalEventError) {
+        console.error('Caught unexpected interaction runtime bubble error:', globalEventError);
     }
+});
 
-    // --- STEP 2: RESOLVE PERSISTENT QUIZ LOOPS ---
-    const userSessionKey = `${interaction.user.id}_${channel.id}`;
-    let session = globalStorage.get(userSessionKey);
+// --- RENDER HEALTH PROTOCOL WEB SERVER LAYER ---
+const server = http.createServer((req, res) => {
+    res.writeHead(200, { 'Content-Type': 'text/plain' });
+    res.end('OK');
+});
 
-    if (!session || !session.questions || session.questions.length ===
+server.listen(PORT, '0.0.0.0', () => {
+    console.log(`🌐 Render Health Check Interface bound to 0.0.0.0:${PORT}`);
+    
+    // Establishing gateway stream interface once server bindings clear
+    client.login(TOKEN).then(() => {
+        console.log('✅ Bot login request transmitted successfully.');
+    }).catch((loginError) => {
+        console.error('❌ CRITICAL ERROR: Gateway registration handshake dropped:', loginError);
+        process.exit(1);
+    });
+});
