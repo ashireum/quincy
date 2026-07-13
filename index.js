@@ -1,4 +1,4 @@
-const { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, REST, Routes, ApplicationCommandOptionType } = require('discord.js');
+const { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, REST, Routes, ApplicationCommandOptionType, PermissionFlagsBits } = require('discord.js');
 const pdfParse = require('pdf-parse');
 const axios = require('axios');
 const http = require('http');
@@ -21,8 +21,9 @@ const client = new Client({
 
 const TOKEN = process.env.DISCORD_TOKEN;
 
-// Keyed by interaction ID or user ID to avoid channel collisions
-const globalStorage = new Map();
+// Memory storage blocks
+const globalStorage = new Map(); // Stores user-specific isolated runtime decks
+const sharedRooms = new Map();   // Stores host-uploaded public room decks
 
 // --- PRE-COMPILED PARSER REGEXES ---
 const QUESTION_START_REGEX = /^(?:(?:Question|Q|No\.)\s*)?(\d+)(?:[\.\)]|(?:\s+))?/i;
@@ -167,12 +168,25 @@ client.once('ready', async () => {
 
     const commands = [
         {
-            name: 'quiz',
-            description: 'Upload a PDF or TXT reviewer to start an interactive private quiz deck.',
+            name: 'startquiz',
+            description: 'Start a private solo quiz session using a personal document.',
             options: [
                 {
                     name: 'reviewer',
-                    description: 'Select your study file (.pdf or .txt format only)',
+                    description: 'Select your study file (.pdf or .txt)',
+                    type: ApplicationCommandOptionType.Attachment,
+                    required: true
+                }
+            ]
+        },
+        {
+            name: 'quiz',
+            description: 'Host a public review room. Only server owners/admins can launch this.',
+            default_member_permissions: PermissionFlagsBits.ManageGuild.toString(),
+            options: [
+                {
+                    name: 'reviewer',
+                    description: 'Select the shared room study file (.pdf or .txt)',
                     type: ApplicationCommandOptionType.Attachment,
                     required: true
                 }
@@ -182,47 +196,43 @@ client.once('ready', async () => {
 
     const rest = new REST({ version: '10' }).setToken(TOKEN);
     try {
-        console.log('⏳ Synchronizing global slash application commands...');
+        console.log('⏳ Synchronizing dual application command systems...');
         await rest.put(Routes.applicationCommands(client.user.id), { body: commands });
-        console.log('✅ Global application slash commands registered successfully.');
+        console.log('✅ Global slash command routing frameworks active.');
     } catch (error) {
-        console.error('Error registering slash commands:', error);
+        console.error('Registration framework collision:', error);
     }
 });
 
 // --- INTERACTION HANDLING HUB ---
 client.on('interactionCreate', async (interaction) => {
-    // A. HANDLE SLASH COMMAND EXECUTION
+    
+    // A. HANDLE COMMAND INVOCATIONS
     if (interaction.isChatInputCommand()) {
-        if (interaction.commandName === 'quiz') {
-            const attachment = interaction.options.getAttachment('reviewer');
-            if (!attachment) return interaction.reply({ content: "❌ Missing file attachment parameters.", ephemeral: true });
+        const attachment = interaction.options.getAttachment('reviewer');
+        if (!attachment) return interaction.reply({ content: "❌ Missing file attachment parameters.", ephemeral: true });
 
-            const isPDF = attachment.name.endsWith('.pdf');
-            const isTXT = attachment.name.endsWith('.txt');
-            if (!isPDF && !isTXT) {
-                return interaction.reply({ content: "❌ Invalid file type. Please upload only `.pdf` or `.txt` formats.", ephemeral: true });
-            }
+        const isPDF = attachment.name.endsWith('.pdf');
+        const isTXT = attachment.name.endsWith('.txt');
+        if (!isPDF && !isTXT) {
+            return interaction.reply({ content: "❌ Invalid format structure. Please supply `.pdf` or `.txt` items.", ephemeral: true });
+        }
 
-            // Lock this reply down strictly to EPHEMERAL (Only the user sees it)
+        // --- OPTION 1: PRIVATE MODE (/startquiz) ---
+        if (interaction.commandName === 'startquiz') {
             await interaction.deferReply({ ephemeral: true });
 
             try {
                 const response = await axios.get(attachment.url, { responseType: isPDF ? 'arraybuffer' : 'text', timeout: 15000 });
                 let extractedText = isPDF ? (await pdfParse(Buffer.from(response.data))).text : response.data;
-                
                 let questions = parseQuestions(extractedText);
-                if (questions.length === 0) {
-                    return await interaction.editReply("❌ **Parsing Failure:** Could not discover cleanly structured questions.");
-                }
-
+                
+                if (questions.length === 0) return await interaction.editReply("❌ **Parsing Failure:** No cleanly structured items detected.");
                 if (SHUFFLE_QUESTIONS) questions = shuffleArray(questions);
 
-                // Use unique user ID + channel ID combined map keys to isolate parallel individual attempts
                 const userSessionKey = `${interaction.user.id}_${interaction.channel.id}`;
                 globalStorage.set(userSessionKey, { userId: interaction.user.id, questions });
 
-                // Start the quiz directly inside the private ephemeral reply framework!
                 const activeItem = questions[0];
                 const firstQuestionEmbed = buildQuizEmbed(activeItem, 0, questions.length, 0, 0);
                 const btnRow = new ActionRowBuilder();
@@ -233,78 +243,60 @@ client.on('interactionCreate', async (interaction) => {
                     }
                 });
 
-                // Update the hidden message frame with the quiz questions
                 await interaction.editReply({ embeds: [firstQuestionEmbed], components: [btnRow] });
-
             } catch (error) {
                 console.error(error);
-                await interaction.editReply("❌ **System Error:** Failed to cleanly ingest document buffers.").catch(() => {});
+                await interaction.editReply("❌ **System Error:** Failed to cleanly ingest private data frames.");
+            }
+        }
+
+        // --- OPTION 2: HOST MODE (/quiz) ---
+        if (interaction.commandName === 'quiz') {
+            await interaction.deferReply({ ephemeral: true });
+
+            try {
+                const response = await axios.get(attachment.url, { responseType: isPDF ? 'arraybuffer' : 'text', timeout: 15000 });
+                let extractedText = isPDF ? (await pdfParse(Buffer.from(response.data))).text : response.data;
+                let questions = parseQuestions(extractedText);
+                
+                if (questions.length === 0) return await interaction.editReply("❌ **Parsing Failure:** Couldn't map structured content patterns.");
+
+                sharedRooms.set(interaction.channel.id, { questions });
+                await interaction.deleteReply();
+
+                const roomEmbed = new EmbedBuilder()
+                    .setTitle("🎯 Active Review Deck Initialized!")
+                    .setDescription(`**Host:** ${interaction.user}\n**Operational Items:** ${questions.length} questions loaded.\n\nClick the invitation portal switch below to claim your private instance tracking profile.`)
+                    .setColor(0x9b59b6)
+                    .setFooter({ text: "Progress loops are strictly individual and isolated from public view." });
+
+                const joinRow = new ActionRowBuilder().addComponents(
+                    new ButtonBuilder().setCustomId('room_join_portal').setLabel('Join Quiz Module 🎯').setStyle(ButtonStyle.Primary)
+                );
+
+                await interaction.channel.send({ embeds: [roomEmbed], components: [joinRow] });
+            } catch (error) {
+                console.error(error);
+                await interaction.editReply("❌ **System Error:** Shared buffer indexing failure.").catch(() => {});
             }
         }
         return;
     }
 
-    // B. HANDLE INTERACTIVE BUTTON PRESSES
+    // B. HANDLE ALL BUTTON ACTIONS
     if (!interaction.isButton()) return;
 
     const channel = interaction.channel;
-    const userSessionKey = `${interaction.user.id}_${interaction.channel.id}`;
-    let session = globalStorage.get(userSessionKey);
 
-    if (!session || !session.questions || session.questions.length === 0) {
-        return interaction.reply({ content: "⚠️ **Session Expired:** Run `/quiz` again to start your own trial.", ephemeral: true }).catch(() => {});
-    }
-
-    try {
-        await interaction.deferUpdate();
-    } catch (err) {
-        console.error("Defer update thread collision:", err);
-        return;
-    }
-
-    const questions = session.questions;
-
-    if (interaction.customId.startsWith('dyn_answer_')) {
-        const [, , indexStr, scoreStr, chosen] = interaction.customId.split('_');
-        const idx = parseInt(indexStr);
-        let currentScore = parseInt(scoreStr);
-
-        if (isNaN(idx) || isNaN(currentScore) || !questions[idx] || !chosen) return;
-
-        const activeItem = questions[idx];
-        const isCorrect = chosen === activeItem.correct;
-        if (isCorrect) currentScore++;
-
-        const evaluationEmbed = buildQuizEmbed(activeItem, idx, questions.length, currentScore, idx + 1, chosen);
-        const navigationRow = new ActionRowBuilder();
-
-        if (idx + 1 < questions.length) {
-            navigationRow.addComponents(
-                new ButtonBuilder().setCustomId(`dyn_next_${idx + 1}_${currentScore}`).setLabel('Next Question ➡️').setStyle(ButtonStyle.Primary)
-            );
-        } else {
-            evaluationEmbed.addFields({ name: '🏁 Evaluation Complete!', value: `📈 Your Private Score Metric: **${currentScore} / ${questions.length}** (${Math.round((currentScore / questions.length) * 100)}%)` });
-            globalStorage.delete(userSessionKey); // Wipe instance data cleanly
+    // --- STEP 1: RESOLVE THE PUBLIC ROOM PORTAL CLICKS ---
+    if (interaction.customId === 'room_join_portal') {
+        const roomData = sharedRooms.get(channel.id);
+        if (!roomData || !roomData.questions) {
+            return interaction.reply({ content: "⚠️ **Room Expired:** The host deck has left the memory registry. Please rebuild.", ephemeral: true });
         }
-        await interaction.message.edit({ embeds: [evaluationEmbed], components: navigationRow.components.length ? [navigationRow] : [] }).catch(console.error);
 
-    } else if (interaction.customId.startsWith('dyn_next_')) {
-        const [, , nextIndexStr, nextScoreStr] = interaction.customId.split('_');
-        const index = parseInt(nextIndexStr);
-        const score = parseInt(nextScoreStr);
-        const activeItem = questions[index];
+        let assignedQuestions = [...roomData.questions];
+        if (SHUFFLE_QUESTIONS) assignedQuestions = shuffleArray(assignedQuestions);
 
-        if (isNaN(index) || isNaN(score) || !activeItem) return;
-
-        const questionEmbed = buildQuizEmbed(activeItem, index, questions.length, score, index);
-        const btnRow = new ActionRowBuilder();
-        activeItem.originalOrder.forEach(letter => {
-            if (activeItem.options[letter]) {
-                btnRow.addComponents(new ButtonBuilder().setCustomId(`dyn_answer_${index}_${score}_${letter}`).setLabel(letter).setStyle(ButtonStyle.Secondary));
-            }
-        });
-        await interaction.message.edit({ embeds: [questionEmbed], components: [btnRow] }).catch(console.error);
-    }
-});
-
-client.login(TOKEN);
+        const userSessionKey = `${interaction.user.id}_${channel.id}`;
+        globalStorage.set(userSessionKey, { userId: interaction.user.id, questions: assignedQuestions
