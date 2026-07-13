@@ -1,13 +1,12 @@
-const { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
+const { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, REST, Routes, ApplicationCommandOptionType } = require('discord.js');
 const pdfParse = require('pdf-parse');
 const axios = require('axios');
 const http = require('http');
 
-// Configurable Feature Toggles
 const SHUFFLE_QUESTIONS = false;
 const SHUFFLE_CHOICES = false;
 
-// Dummy web server to satisfy Render's port check
+// Dummy web server for hosting checks
 const server = http.createServer((req, res) => {
     res.writeHead(200, { 'Content-Type': 'text/plain' });
     res.end('Quiz engine active!\n');
@@ -17,19 +16,15 @@ server.listen(process.env.PORT || 3000, () => {
 });
 
 const client = new Client({
-    intents: [
-        GatewayIntentBits.Guilds,
-        GatewayIntentBits.GuildMessages,
-        GatewayIntentBits.MessageContent
-    ]
+    intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages]
 });
 
 const TOKEN = process.env.DISCORD_TOKEN;
 
-// Global memory map locked to text channel IDs
+// Keyed by interaction ID or user ID to avoid channel collisions
 const globalStorage = new Map();
 
-// --- PRE-COMPILED REGULAR EXPRESSIONS ---
+// --- PRE-COMPILED PARSER REGEXES ---
 const QUESTION_START_REGEX = /^(?:(?:Question|Q|No\.)\s*)?(\d+)(?:[\.\)]|(?:\s+))?/i;
 const ISOLATED_YEAR_REGEX = /^(19|20)\d{2}$/;
 const OPTION_START_REGEX = /^([A-D])\s*[\.\):\-\u2013\u2014]/i;
@@ -47,7 +42,6 @@ function shuffleArray(array) {
 
 function parseQuestions(text) {
     if (!text || typeof text !== 'string') return [];
-
     const lines = text.split('\n').map(line => line.trim());
     const questions = [];
     let currentQuestion = null;
@@ -61,7 +55,6 @@ function parseQuestions(text) {
             if (currentQuestion && currentQuestion.question && Object.keys(currentQuestion.options).length >= 2) {
                 questions.push(currentQuestion);
             }
-            
             currentQuestion = {
                 question: line.replace(QUESTION_START_REGEX, '').trim(),
                 options: {},
@@ -116,19 +109,15 @@ function parseQuestions(text) {
     return questions.map(q => {
         q.question = q.question.replace(/\s+/g, ' ').trim();
         q.rationale = q.rationale.trim() || 'No specific study note provided.';
-        
         let displayChoices = Object.keys(q.options).sort();
         if (SHUFFLE_CHOICES) {
             const correctText = q.options[q.correct];
             displayChoices = shuffleArray([...displayChoices]);
-            
             const newOptions = {};
             displayChoices.forEach((letter, index) => {
                 const targetKey = String.fromCharCode(65 + index);
                 newOptions[targetKey] = q.options[letter];
-                if (q.options[letter] === correctText) {
-                    q.correct = targetKey;
-                }
+                if (q.options[letter] === correctText) q.correct = targetKey;
             });
             q.options = newOptions;
             displayChoices = Object.keys(newOptions).sort();
@@ -163,162 +152,124 @@ function buildQuizEmbed(item, index, total, score, answeredCount, chosen = null)
             let label = `${regionalIndicators[letter]} Option ${letter}`;
             if (letter === item.correct) label += ' ✅ (Correct)';
             else if (letter === chosen) label += ' ❌ (Your Pick)';
-
             if (item.options[letter]) {
                 embed.addFields({ name: label, value: item.options[letter], inline: false });
             }
         });
-
         embed.addFields({ name: '💡 Rationale & Clinical Notes', value: item.rationale, inline: false });
     }
     return embed;
 }
 
-client.once('ready', () => {
+// --- AUTOMATIC COMMAND REGISTRATION ON BOOT ---
+client.once('ready', async () => {
     console.log(`🤖 Quiz Bot is online as ${client.user.tag}!`);
-});
 
-client.on('messageCreate', async (message) => {
-    if (message.author.bot) return;
+    const commands = [
+        {
+            name: 'quiz',
+            description: 'Upload a PDF or TXT reviewer to start an interactive private quiz deck.',
+            options: [
+                {
+                    name: 'reviewer',
+                    description: 'Select your study file (.pdf or .txt format only)',
+                    type: ApplicationCommandOptionType.Attachment,
+                    required: true
+                }
+            ]
+        }
+    ];
 
-    const attachment = message.attachments.first();
-    if (!attachment) return;
-
-    const isPDF = attachment.name.endsWith('.pdf');
-    const isTXT = attachment.name.endsWith('.txt');
-    if (!isPDF && !isTXT) return;
-
-    let loadingMessage;
+    const rest = new REST({ version: '10' }).setToken(TOKEN);
     try {
-        loadingMessage = await message.reply(`⏳ Reading your ${isPDF ? 'PDF' : 'Text'} file and extracting questions... Please wait!`);
-
-        const response = await axios.get(attachment.url, { 
-            responseType: isPDF ? 'arraybuffer' : 'text',
-            timeout: 15000 
-        });
-
-        let extractedText = "";
-        if (isPDF) {
-            const data = await pdfParse(Buffer.from(response.data));
-            extractedText = data.text;
-        } else {
-            extractedText = response.data;
-        }
-
-        let questions = parseQuestions(extractedText);
-        if (questions.length === 0) {
-            return await loadingMessage.edit("❌ **Parsing Failure:** Could not identify any structured multiple choice items.");
-        }
-
-        if (SHUFFLE_QUESTIONS) {
-            questions = shuffleArray(questions);
-        }
-
-        globalStorage.set(message.channel.id, { userId: message.author.id, questions });
-
-        const startEmbed = new EmbedBuilder()
-            .setTitle("📚 Review Deck Loaded!")
-            .setDescription(`Successfully parsed **${questions.length}** valid operational questions out of your document metadata.`)
-            .setColor(0x2ecc71);
-
-        const row = new ActionRowBuilder().addComponents(
-            new ButtonBuilder().setCustomId('dyn_start_quiz').setLabel('🎯 Start Quiz').setStyle(ButtonStyle.Success)
-        );
-
-        await loadingMessage.edit({ content: '', embeds: [startEmbed], components: [row] });
-
+        console.log('⏳ Synchronizing global slash application commands...');
+        await rest.put(Routes.applicationCommands(client.user.id), { body: commands });
+        console.log('✅ Global application slash commands registered successfully.');
     } catch (error) {
-        console.error("Extraction pipeline failed:", error);
-        const fallbackMsg = "❌ **System Error:** Failed to read file stream.";
-        if (loadingMessage) await loadingMessage.edit(fallbackMsg).catch(() => {});
-        else message.reply(fallbackMsg).catch(() => {});
+        console.error('Error registering slash commands:', error);
     }
 });
 
+// --- INTERACTION HANDLING HUB ---
 client.on('interactionCreate', async (interaction) => {
+    // A. HANDLE SLASH COMMAND EXECUTION
+    if (interaction.isChatInputCommand()) {
+        if (interaction.commandName === 'quiz') {
+            const attachment = interaction.options.getAttachment('reviewer');
+            if (!attachment) return interaction.reply({ content: "❌ Missing file attachment parameters.", ephemeral: true });
+
+            const isPDF = attachment.name.endsWith('.pdf');
+            const isTXT = attachment.name.endsWith('.txt');
+            if (!isPDF && !isTXT) {
+                return interaction.reply({ content: "❌ Invalid file type. Please upload only `.pdf` or `.txt` formats.", ephemeral: true });
+            }
+
+            // Lock this reply down strictly to EPHEMERAL (Only the user sees it)
+            await interaction.deferReply({ ephemeral: true });
+
+            try {
+                const response = await axios.get(attachment.url, { responseType: isPDF ? 'arraybuffer' : 'text', timeout: 15000 });
+                let extractedText = isPDF ? (await pdfParse(Buffer.from(response.data))).text : response.data;
+                
+                let questions = parseQuestions(extractedText);
+                if (questions.length === 0) {
+                    return await interaction.editReply("❌ **Parsing Failure:** Could not discover cleanly structured questions.");
+                }
+
+                if (SHUFFLE_QUESTIONS) questions = shuffleArray(questions);
+
+                // Use unique user ID + channel ID combined map keys to isolate parallel individual attempts
+                const userSessionKey = `${interaction.user.id}_${interaction.channel.id}`;
+                globalStorage.set(userSessionKey, { userId: interaction.user.id, questions });
+
+                // Start the quiz directly inside the private ephemeral reply framework!
+                const activeItem = questions[0];
+                const firstQuestionEmbed = buildQuizEmbed(activeItem, 0, questions.length, 0, 0);
+                const btnRow = new ActionRowBuilder();
+                
+                activeItem.originalOrder.forEach(letter => {
+                    if (activeItem.options[letter]) {
+                        btnRow.addComponents(new ButtonBuilder().setCustomId(`dyn_answer_0_0_${letter}`).setLabel(letter).setStyle(ButtonStyle.Secondary));
+                    }
+                });
+
+                // Update the hidden message frame with the quiz questions
+                await interaction.editReply({ embeds: [firstQuestionEmbed], components: [btnRow] });
+
+            } catch (error) {
+                console.error(error);
+                await interaction.editReply("❌ **System Error:** Failed to cleanly ingest document buffers.").catch(() => {});
+            }
+        }
+        return;
+    }
+
+    // B. HANDLE INTERACTIVE BUTTON PRESSES
     if (!interaction.isButton()) return;
 
     const channel = interaction.channel;
-    let session = globalStorage.get(channel.id);
-
-    // AUTO-RESTORE TRACKER ROUTINE
-    if (!session || !session.questions || session.questions.length === 0) {
-        try {
-            const messages = await channel.messages.fetch({ limit: 15 });
-            const targetMessage = messages.find(m => {
-                const att = m.attachments.first();
-                return att && (att.name.endsWith('.pdf') || att.name.endsWith('.txt'));
-            });
-
-            if (targetMessage) {
-                const attachment = targetMessage.attachments.first();
-                const isPDF = attachment.name.endsWith('.pdf');
-                const response = await axios.get(attachment.url, { responseType: isPDF ? 'arraybuffer' : 'text', timeout: 10000 });
-                let extractedText = isPDF ? (await pdfParse(Buffer.from(response.data))).text : response.data;
-                
-                let restoredQuestions = parseQuestions(extractedText);
-                if (SHUFFLE_QUESTIONS) restoredQuestions = shuffleArray(restoredQuestions);
-
-                if (restoredQuestions.length > 0) {
-                    session = { userId: targetMessage.author.id, questions: restoredQuestions };
-                    globalStorage.set(channel.id, session);
-                }
-            }
-        } catch (e) {
-            console.error("Automated session re-hydration sequence failed:", e);
-        }
-    }
+    const userSessionKey = `${interaction.user.id}_${interaction.channel.id}`;
+    let session = globalStorage.get(userSessionKey);
 
     if (!session || !session.questions || session.questions.length === 0) {
-        return interaction.reply({ content: "⚠️ **Session Inactivity Timeout:** Re-upload your source material text file.", ephemeral: true }).catch(() => {});
-    }
-
-    if (session.userId && interaction.user.id !== session.userId) {
-        return interaction.reply({ 
-            content: "❌ This quiz session belongs to another user. Please upload your own reviewer document.", 
-            ephemeral: true 
-        });
+        return interaction.reply({ content: "⚠️ **Session Expired:** Run `/quiz` again to start your own trial.", ephemeral: true }).catch(() => {});
     }
 
     try {
         await interaction.deferUpdate();
     } catch (err) {
-        console.error("Failed to defer thread operation interaction:", err);
+        console.error("Defer update thread collision:", err);
         return;
     }
 
     const questions = session.questions;
 
-    // --- TEMPORARY DEBUGGING LOGS ---
-    console.log(`[DEBUG] Received customId: "${interaction.customId}"`);
-    console.log(`[DEBUG] Split Array:`, interaction.customId.split('_'));
-
-    if (interaction.customId === 'dyn_start_quiz') {
-        const activeItem = questions[0];
-        const embed = buildQuizEmbed(activeItem, 0, questions.length, 0, 0);
-
-        const btnRow = new ActionRowBuilder();
-        activeItem.originalOrder.forEach(letter => {
-            if (activeItem.options[letter]) {
-                btnRow.addComponents(new ButtonBuilder().setCustomId(`dyn_answer_0_0_${letter}`).setLabel(letter).setStyle(ButtonStyle.Secondary));
-            }
-        });
-
-        await interaction.message.edit({ embeds: [embed], components: [btnRow] }).catch(console.error);
-
-    } else if (interaction.customId.startsWith('dyn_answer_')) {
-        // FIXED ARRAY POSITION DESTRUCTURING: [ "dyn", "answer", "index", "score", "chosen" ]
+    if (interaction.customId.startsWith('dyn_answer_')) {
         const [, , indexStr, scoreStr, chosen] = interaction.customId.split('_');
         const idx = parseInt(indexStr);
         let currentScore = parseInt(scoreStr);
-        
-        console.log(`[DEBUG_ANSWER] Parsed Variables -> Index: ${idx}, Score: ${currentScore}, Chosen Option: "${chosen}"`);
 
-        // Defensive Validation Guard
-        if (isNaN(idx) || isNaN(currentScore) || !questions[idx] || !chosen) {
-            console.error(`[ERROR] Invalid parameters on answer click. Index: ${indexStr}, Score: ${scoreStr}, Chosen: ${chosen}`);
-            return;
-        }
+        if (isNaN(idx) || isNaN(currentScore) || !questions[idx] || !chosen) return;
 
         const activeItem = questions[idx];
         const isCorrect = chosen === activeItem.correct;
@@ -332,35 +283,26 @@ client.on('interactionCreate', async (interaction) => {
                 new ButtonBuilder().setCustomId(`dyn_next_${idx + 1}_${currentScore}`).setLabel('Next Question ➡️').setStyle(ButtonStyle.Primary)
             );
         } else {
-            evaluationEmbed.addFields({ name: '🏁 Final Metric Evaluation Complete!', value: `📈 Total Diagnostic Accuracy Rating: **${currentScore} / ${questions.length}** (${Math.round((currentScore / questions.length) * 100)}%)` });
+            evaluationEmbed.addFields({ name: '🏁 Evaluation Complete!', value: `📈 Your Private Score Metric: **${currentScore} / ${questions.length}** (${Math.round((currentScore / questions.length) * 100)}%)` });
+            globalStorage.delete(userSessionKey); // Wipe instance data cleanly
         }
-
         await interaction.message.edit({ embeds: [evaluationEmbed], components: navigationRow.components.length ? [navigationRow] : [] }).catch(console.error);
 
     } else if (interaction.customId.startsWith('dyn_next_')) {
-        // FIXED ARRAY POSITION DESTRUCTURING: [ "dyn", "next", "index", "score" ]
         const [, , nextIndexStr, nextScoreStr] = interaction.customId.split('_');
         const index = parseInt(nextIndexStr);
         const score = parseInt(nextScoreStr);
-        
-        console.log(`[DEBUG_NEXT] Parsed Variables -> Next Index: ${index}, Preserved Score: ${score}`);
-
-        // Defensive Validation Guard
-        if (isNaN(index) || isNaN(score) || !questions[index]) {
-            console.error(`[ERROR] Invalid parameters on next question click. Index: ${nextIndexStr}, Score: ${nextScoreStr}`);
-            return;
-        }
-
         const activeItem = questions[index];
+
+        if (isNaN(index) || isNaN(score) || !activeItem) return;
+
         const questionEmbed = buildQuizEmbed(activeItem, index, questions.length, score, index);
         const btnRow = new ActionRowBuilder();
-        
         activeItem.originalOrder.forEach(letter => {
             if (activeItem.options[letter]) {
                 btnRow.addComponents(new ButtonBuilder().setCustomId(`dyn_answer_${index}_${score}_${letter}`).setLabel(letter).setStyle(ButtonStyle.Secondary));
             }
         });
-
         await interaction.message.edit({ embeds: [questionEmbed], components: [btnRow] }).catch(console.error);
     }
 });
