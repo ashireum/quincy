@@ -28,7 +28,7 @@ console.log('✅ Environment parameters verified successfully.');
 
 // --- RUNTIME MEMORY STORAGE REGISTRIES ---
 const globalStorage = new Map(); 
-const sharedRooms = new Map();   
+const sharedRooms = new Map();   // Now stores room data using unique Message IDs!
 
 // --- PRE-COMPILED PARSER REGEXES ---
 const QUESTION_START_REGEX = /^(?:(?:Question|Q|No\.)\s*)?(\d+)(?:[\.\)]|(?:\s+))?/i;
@@ -197,7 +197,6 @@ client.once('ready', async () => {
         {
             name: 'quiz',
             description: 'Host a shared review room for everyone in the server to join.',
-            // Removed admin-only limitation to allow all classmates to host rooms
             options: [
                 {
                     name: 'reviewer',
@@ -283,7 +282,6 @@ client.on('interactionCreate', async (interaction) => {
                     
                     if (questions.length === 0) return await interaction.editReply("❌ **Parsing Failure:** Couldn't map structured content patterns.").catch(console.error);
 
-                    sharedRooms.set(interaction.channel.id, { questions, title: quizTitle });
                     await interaction.deleteReply().catch(console.error);
 
                     const roomEmbed = new EmbedBuilder()
@@ -296,7 +294,12 @@ client.on('interactionCreate', async (interaction) => {
                         new ButtonBuilder().setCustomId('room_join_portal').setLabel('Join Quiz Module 🎯').setStyle(ButtonStyle.Primary)
                     );
 
-                    await interaction.channel.send({ embeds: [roomEmbed], components: [joinRow] }).catch(console.error);
+                    // Send the message and then save the questions mapped to this UNIQUE message ID
+                    const sentMessage = await interaction.channel.send({ embeds: [roomEmbed], components: [joinRow] }).catch(console.error);
+                    
+                    if (sentMessage) {
+                        sharedRooms.set(sentMessage.id, { questions, title: quizTitle });
+                    }
                 } catch (error) {
                     console.error('Error handling public room init:', error);
                     await interaction.editReply('❌ **System Error:** Shared buffer indexing failure.').catch(console.error);
@@ -309,7 +312,8 @@ client.on('interactionCreate', async (interaction) => {
         const channel = interaction.channel;
 
         if (interaction.customId === 'room_join_portal') {
-            const roomData = sharedRooms.get(channel.id);
+            // FIX: Look up the quiz by the unique Message ID of the clicked button message!
+            const roomData = sharedRooms.get(interaction.message.id);
             if (!roomData || !roomData.questions) {
                 return await interaction.reply({ content: '⚠️ **Room Expired:** This host deck is no longer in memory.', ephemeral: true }).catch(console.error);
             }
