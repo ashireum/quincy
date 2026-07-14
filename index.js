@@ -133,13 +133,12 @@ function parseQuestions(text) {
     });
 }
 
-function buildQuizEmbed(item, index, total, score, answeredCount, chosen = null) {
+function buildQuizEmbed(item, index, total, score, answeredCount, quizTitle, chosen = null) {
     const embed = new EmbedBuilder().setColor(0x3498db);
-    const regionalIndicators = { A: 'A', B: 'B', C: 'C', D: 'D' };
 
     if (!chosen) {
-        embed.setTitle(`Question ${index + 1} of ${total}`)
-            .setDescription(`**${item.question}**`)
+        embed.setTitle(`📝 ${quizTitle}`)
+            .setDescription(`**Question ${index + 1} of ${total}**\n\n${item.question}`)
             .setFooter({ text: `Question ${index + 1}/${total} • Current Score: ${score}/${answeredCount}` });
 
         item.originalOrder.forEach(letter => {
@@ -150,14 +149,14 @@ function buildQuizEmbed(item, index, total, score, answeredCount, chosen = null)
     } else {
         const isCorrect = chosen === item.correct;
         embed.setColor(isCorrect ? 0x2ecc71 : 0xe74c3c)
-            .setTitle(`Question ${index + 1} Feedback`)
-            .setDescription(`**Your Verdict:** ${isCorrect ? 'Correct!' : 'Incorrect'}\n\n**Question:**\n${item.question}`)
+            .setTitle(`📝 ${quizTitle} — Feedback`)
+            .setDescription(`**Your Verdict:** ${isCorrect ? 'Correct! 🎉' : 'Incorrect ❌'}\n\n**Question:**\n${item.question}`)
             .setFooter({ text: `Progress: ${index + 1} of ${total} • Score: ${score} Correct` });
 
         item.originalOrder.forEach(letter => {
             let label = `Option ${letter}`;
-            if (letter === item.correct) label += ' (Correct)';
-            else if (letter === chosen) label += ' (Your Pick)';
+            if (letter === item.correct) label += ' (Correct ✅)';
+            else if (letter === chosen) label += ' (Your Pick ❌)';
             if (item.options[letter]) {
                 embed.addFields({ name: label, value: item.options[letter], inline: false });
             }
@@ -186,19 +185,31 @@ client.once('ready', async () => {
                     description: 'Select your study file (.pdf or .txt)',
                     type: ApplicationCommandOptionType.Attachment,
                     required: true
+                },
+                {
+                    name: 'title',
+                    description: 'Give this quiz session a custom title (optional)',
+                    type: ApplicationCommandOptionType.String,
+                    required: false
                 }
             ]
         },
         {
             name: 'quiz',
-            description: 'Host a public review room. Only server owners/admins can launch this.',
-            default_member_permissions: "32", // Safe Bitfield String
+            description: 'Host a shared review room for everyone in the server to join.',
+            // Removed admin-only limitation to allow all classmates to host rooms
             options: [
                 {
                     name: 'reviewer',
                     description: 'Select the shared room study file (.pdf or .txt)',
                     type: ApplicationCommandOptionType.Attachment,
                     required: true
+                },
+                {
+                    name: 'title',
+                    description: 'Give this shared room quiz a custom title (optional)',
+                    type: ApplicationCommandOptionType.String,
+                    required: false
                 }
             ]
         }
@@ -207,7 +218,6 @@ client.once('ready', async () => {
     const rest = new REST({ version: '10' }).setToken(TOKEN);
     try {
         console.log('⏳ Rest Routing: Synchronizing slash command configurations...');
-        // Safe data mapping ensuring standard structural arrays pass validation cleanly
         await rest.put(Routes.applicationCommands(client.user.id), { body: JSON.parse(JSON.stringify(commands)) });
         console.log('✅ Success: Global application slash commands registered.');
     } catch (error) {
@@ -228,6 +238,10 @@ client.on('interactionCreate', async (interaction) => {
                 return await interaction.reply({ content: '❌ Invalid format structure. Please supply .pdf or .txt items.', ephemeral: true }).catch(console.error);
             }
 
+            // Determine Quiz Title: Custom input or fallback to file name (without extension)
+            const inputTitle = interaction.options.getString('title');
+            const quizTitle = inputTitle ? inputTitle.trim() : attachment.name.replace(/\.[^/.]+$/, "");
+
             if (interaction.commandName === 'startquiz') {
                 await interaction.deferReply({ ephemeral: true }).catch(console.error);
 
@@ -240,10 +254,10 @@ client.on('interactionCreate', async (interaction) => {
                     if (SHUFFLE_QUESTIONS) questions = shuffleArray(questions);
 
                     const userSessionKey = `${interaction.user.id}_${interaction.channel.id}`;
-                    globalStorage.set(userSessionKey, { userId: interaction.user.id, questions });
+                    globalStorage.set(userSessionKey, { userId: interaction.user.id, questions, title: quizTitle });
 
                     const activeItem = questions[0];
-                    const firstQuestionEmbed = buildQuizEmbed(activeItem, 0, questions.length, 0, 0);
+                    const firstQuestionEmbed = buildQuizEmbed(activeItem, 0, questions.length, 0, 0, quizTitle);
                     const btnRow = new ActionRowBuilder();
                     
                     activeItem.originalOrder.forEach(letter => {
@@ -269,14 +283,14 @@ client.on('interactionCreate', async (interaction) => {
                     
                     if (questions.length === 0) return await interaction.editReply("❌ **Parsing Failure:** Couldn't map structured content patterns.").catch(console.error);
 
-                    sharedRooms.set(interaction.channel.id, { questions });
+                    sharedRooms.set(interaction.channel.id, { questions, title: quizTitle });
                     await interaction.deleteReply().catch(console.error);
 
                     const roomEmbed = new EmbedBuilder()
-                        .setTitle('🎯 Active Review Deck Initialized!')
-                        .setDescription(`**Host:** ${interaction.user}\n**Operational Items:** ${questions.length} questions loaded.\n\nClick the invitation portal switch below to claim your private instance tracking profile.`)
+                        .setTitle(`🎯 Shared Review Room: ${quizTitle}`)
+                        .setDescription(`**Host:** ${interaction.user}\n**Operational Items:** ${questions.length} questions loaded.\n\nClick the portal switch below to claim your private study session.`)
                         .setColor(0x9b59b6)
-                        .setFooter({ text: 'Progress loops are strictly individual and isolated from public view.' });
+                        .setFooter({ text: 'Your personal progress and scores remain strictly private.' });
 
                     const joinRow = new ActionRowBuilder().addComponents(
                         new ButtonBuilder().setCustomId('room_join_portal').setLabel('Join Quiz Module 🎯').setStyle(ButtonStyle.Primary)
@@ -297,17 +311,17 @@ client.on('interactionCreate', async (interaction) => {
         if (interaction.customId === 'room_join_portal') {
             const roomData = sharedRooms.get(channel.id);
             if (!roomData || !roomData.questions) {
-                return await interaction.reply({ content: '⚠️ **Room Expired:** The host deck has left the memory registry. Please rebuild.', ephemeral: true }).catch(console.error);
+                return await interaction.reply({ content: '⚠️ **Room Expired:** This host deck is no longer in memory.', ephemeral: true }).catch(console.error);
             }
 
             let assignedQuestions = [...roomData.questions];
             if (SHUFFLE_QUESTIONS) assignedQuestions = shuffleArray(assignedQuestions);
 
             const userSessionKey = `${interaction.user.id}_${channel.id}`;
-            globalStorage.set(userSessionKey, { userId: interaction.user.id, questions: assignedQuestions });
+            globalStorage.set(userSessionKey, { userId: interaction.user.id, questions: assignedQuestions, title: roomData.title });
 
             const activeItem = assignedQuestions[0];
-            const initialEmbed = buildQuizEmbed(activeItem, 0, assignedQuestions.length, 0, 0);
+            const initialEmbed = buildQuizEmbed(activeItem, 0, assignedQuestions.length, 0, 0, roomData.title);
             const choiceRow = new ActionRowBuilder();
             
             activeItem.originalOrder.forEach(letter => {
@@ -329,6 +343,7 @@ client.on('interactionCreate', async (interaction) => {
         }
 
         const questions = session.questions;
+        const quizTitle = session.title || 'Review Session';
 
         // Handle Answer Option Selection (A, B, C, D)
         if (interaction.customId.startsWith('dyn_answer_')) {
@@ -350,7 +365,7 @@ client.on('interactionCreate', async (interaction) => {
 
             console.log(`[QUIZ DEBUG] Evaluation -> Verdict: ${isCorrect ? 'CORRECT' : 'INCORRECT'} | New Score: ${currentScore}/${idx + 1}`);
 
-            const evaluationEmbed = buildQuizEmbed(activeItem, idx, questions.length, currentScore, idx + 1, chosen);
+            const evaluationEmbed = buildQuizEmbed(activeItem, idx, questions.length, currentScore, idx + 1, quizTitle, chosen);
             const navigationRow = new ActionRowBuilder();
 
             if (idx + 1 < questions.length) {
@@ -384,7 +399,7 @@ client.on('interactionCreate', async (interaction) => {
                 return;
             }
 
-            const questionEmbed = buildQuizEmbed(activeItem, index, questions.length, score, index);
+            const questionEmbed = buildQuizEmbed(activeItem, index, questions.length, score, index, quizTitle);
             const btnRow = new ActionRowBuilder();
             
             activeItem.originalOrder.forEach(letter => {
