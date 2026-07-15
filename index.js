@@ -5,11 +5,11 @@ const http = require('http');
 
 // --- GLOBAL ERROR PROTECTION LAYER (Prevents Render Process Crashes) ---
 process.on('uncaughtException', (error) => {
-    console.error('🚨 CRITICAL UNCAUGHT EXCEPTION AUDITED:', error.stack || error);
+    console.log('🚨 CRITICAL UNCAUGHT EXCEPTION AUDITED:', error.stack || error);
 });
 
 process.on('unhandledRejection', (reason, promise) => {
-    console.error('🚨 UNHANDLED PROMISE REJECTION AUDITED AT:', promise, 'REASON:', reason);
+    console.log('🚨 UNHANDLED PROMISE REJECTION AUDITED AT:', promise, 'REASON:', reason);
 });
 
 const SHUFFLE_QUESTIONS = false;
@@ -21,17 +21,21 @@ const TOKEN = process.env.DISCORD_TOKEN;
 const PORT = process.env.PORT || 3000;
 
 if (!TOKEN) {
-    console.error('❌ DEPLOYMENT CRITICAL ERROR: "DISCORD_TOKEN" is missing from your environment variables.');
+    console.log('❌ DEPLOYMENT CRITICAL ERROR: "DISCORD_TOKEN" is missing from your environment variables.');
     process.exit(1);
 }
 console.log('✅ Environment parameters verified successfully.');
 
 // --- RUNTIME MEMORY STORAGE REGISTRIES ---
 const globalStorage = new Map(); 
-const sharedRooms = new Map();   // Now stores room data using unique Message IDs!
+const sharedRooms = new Map();   
 
 // --- PRE-COMPILED PARSER REGEXES ---
-const QUESTION_START_REGEX = /^(?:(?:Question|Q|No\.)\s*)?(\d+)(?:[\.\)]|(?:\s+))?/i;
+// BULLETPROOFED: Matches "Question 22:", "Q.22", etc. OR a standalone line starting with "22. " or "22) " followed by actual word characters. Wont trigger on orphaned decimals like "28, PaCO2".
+const QUESTION_START_REGEX = /^(?:(?:Question|Q|No\.|Num)\s*[:.-]?\s*\d+|\d+\s*[\.\)]\s+(?=[A-Za-z"']))/i;
+// Helper to extract just the digits from the matched question line for validation
+const EXTRACT_DIGITS_REGEX = /(\d+)/;
+
 const ISOLATED_YEAR_REGEX = /^(19|20)\d{2}$/;
 const OPTION_START_REGEX = /^([A-D])\s*[\.\):\-\u2013\u2014]/i;
 const ANSWER_KEY_REGEX = /^(?:CORRECT\s+)?ANSWER\s*[:\-\s=]+\s*[\u201C\u201D"']?([A-D])[\u201C\u201D"']?(?:\.|\b)/i;
@@ -61,8 +65,16 @@ function parseQuestions(text) {
             if (currentQuestion && currentQuestion.question && Object.keys(currentQuestion.options).length >= 2) {
                 questions.push(currentQuestion);
             }
+            
+            // Clean off the prefix identifier safely
+            let cleanQuestionText = line.replace(QUESTION_START_REGEX, '').trim();
+            // If the regex left an isolated leading punctuation character from the split, clean it up
+            if (cleanQuestionText.startsWith(':') || cleanQuestionText.startsWith('.') || cleanQuestionText.startsWith(')')) {
+                cleanQuestionText = cleanQuestionText.substring(1).trim();
+            }
+
             currentQuestion = {
-                question: line.replace(QUESTION_START_REGEX, '').trim(),
+                question: cleanQuestionText,
                 options: {},
                 correct: 'A',
                 rationale: '',
@@ -220,7 +232,7 @@ client.once('ready', async () => {
         await rest.put(Routes.applicationCommands(client.user.id), { body: JSON.parse(JSON.stringify(commands)) });
         console.log('✅ Success: Global application slash commands registered.');
     } catch (error) {
-        console.error('⚠️ Registration Error Warning: Failed to sync commands safely:', error);
+        console.log('⚠️ Registration Error Warning: Failed to sync commands safely:', error);
     }
 });
 
@@ -229,27 +241,26 @@ client.on('interactionCreate', async (interaction) => {
     try {
         if (interaction.isChatInputCommand()) {
             const attachment = interaction.options.getAttachment('reviewer');
-            if (!attachment) return await interaction.reply({ content: '❌ Missing file attachment parameters.', ephemeral: true }).catch(console.error);
+            if (!attachment) return await interaction.reply({ content: '❌ Missing file attachment parameters.', ephemeral: true }).catch(console.log);
 
             const isPDF = attachment.name.endsWith('.pdf');
             const isTXT = attachment.name.endsWith('.txt');
             if (!isPDF && !isTXT) {
-                return await interaction.reply({ content: '❌ Invalid format structure. Please supply .pdf or .txt items.', ephemeral: true }).catch(console.error);
+                return await interaction.reply({ content: '❌ Invalid format structure. Please supply .pdf or .txt items.', ephemeral: true }).catch(console.log);
             }
 
-            // Determine Quiz Title: Custom input or fallback to file name (without extension)
             const inputTitle = interaction.options.getString('title');
             const quizTitle = inputTitle ? inputTitle.trim() : attachment.name.replace(/\.[^/.]+$/, "");
 
             if (interaction.commandName === 'startquiz') {
-                await interaction.deferReply({ ephemeral: true }).catch(console.error);
+                await interaction.deferReply({ ephemeral: true }).catch(console.log);
 
                 try {
                     const response = await axios.get(attachment.url, { responseType: isPDF ? 'arraybuffer' : 'text', timeout: 15000 });
                     let extractedText = isPDF ? (await pdfParse(Buffer.from(response.data))).text : response.data;
                     let questions = parseQuestions(extractedText);
                     
-                    if (questions.length === 0) return await interaction.editReply('❌ **Parsing Failure:** No cleanly structured items detected.').catch(console.error);
+                    if (questions.length === 0) return await interaction.editReply('❌ **Parsing Failure:** No cleanly structured items detected.').catch(console.log);
                     if (SHUFFLE_QUESTIONS) questions = shuffleArray(questions);
 
                     const userSessionKey = `${interaction.user.id}_${interaction.channel.id}`;
@@ -265,24 +276,24 @@ client.on('interactionCreate', async (interaction) => {
                         }
                     });
 
-                    await interaction.editReply({ embeds: [firstQuestionEmbed], components: [btnRow] }).catch(console.error);
+                    await interaction.editReply({ embeds: [firstQuestionEmbed], components: [btnRow] }).catch(console.log);
                 } catch (error) {
-                    console.error('Error handling /startquiz data ingestion:', error);
-                    await interaction.editReply('❌ **System Error:** Failed to cleanly ingest private data frames.').catch(console.error);
+                    console.log('Error handling /startquiz data ingestion:', error);
+                    await interaction.editReply('❌ **System Error:** Failed to cleanly ingest private data frames.').catch(console.log);
                 }
             }
 
             if (interaction.commandName === 'quiz') {
-                await interaction.deferReply({ ephemeral: true }).catch(console.error);
+                await interaction.deferReply({ ephemeral: true }).catch(console.log);
 
                 try {
                     const response = await axios.get(attachment.url, { responseType: isPDF ? 'arraybuffer' : 'text', timeout: 15000 });
                     let extractedText = isPDF ? (await pdfParse(Buffer.from(response.data))).text : response.data;
                     let questions = parseQuestions(extractedText);
                     
-                    if (questions.length === 0) return await interaction.editReply("❌ **Parsing Failure:** Couldn't map structured content patterns.").catch(console.error);
+                    if (questions.length === 0) return await interaction.editReply("❌ **Parsing Failure:** Couldn't map structured content patterns.").catch(console.log);
 
-                    await interaction.deleteReply().catch(console.error);
+                    await interaction.deleteReply().catch(console.log);
 
                     const roomEmbed = new EmbedBuilder()
                         .setTitle(`🎯 Shared Review Room: ${quizTitle}`)
@@ -294,15 +305,14 @@ client.on('interactionCreate', async (interaction) => {
                         new ButtonBuilder().setCustomId('room_join_portal').setLabel('Join Quiz Module 🎯').setStyle(ButtonStyle.Primary)
                     );
 
-                    // Send the message and then save the questions mapped to this UNIQUE message ID
-                    const sentMessage = await interaction.channel.send({ embeds: [roomEmbed], components: [joinRow] }).catch(console.error);
+                    const sentMessage = await interaction.channel.send({ embeds: [roomEmbed], components: [joinRow] }).catch(console.log);
                     
                     if (sentMessage) {
                         sharedRooms.set(sentMessage.id, { questions, title: quizTitle });
                     }
                 } catch (error) {
-                    console.error('Error handling public room init:', error);
-                    await interaction.editReply('❌ **System Error:** Shared buffer indexing failure.').catch(console.error);
+                    console.log('Error handling public room init:', error);
+                    await interaction.editReply('❌ **System Error:** Shared buffer indexing failure.').catch(console.log);
                 }
             }
             return;
@@ -312,10 +322,9 @@ client.on('interactionCreate', async (interaction) => {
         const channel = interaction.channel;
 
         if (interaction.customId === 'room_join_portal') {
-            // FIX: Look up the quiz by the unique Message ID of the clicked button message!
             const roomData = sharedRooms.get(interaction.message.id);
             if (!roomData || !roomData.questions) {
-                return await interaction.reply({ content: '⚠️ **Room Expired:** This host deck is no longer in memory.', ephemeral: true }).catch(console.error);
+                return await interaction.reply({ content: '⚠️ **Room Expired:** This host deck is no longer in memory.', ephemeral: true }).catch(console.log);
             }
 
             let assignedQuestions = [...roomData.questions];
@@ -334,16 +343,14 @@ client.on('interactionCreate', async (interaction) => {
                 }
             });
 
-            return await interaction.reply({ embeds: [initialEmbed], components: [choiceRow], ephemeral: true }).catch(console.error);
+            return await interaction.reply({ embeds: [initialEmbed], components: [choiceRow], ephemeral: true }).catch(console.log);
         }
 
         const userSessionKey = `${interaction.user.id}_${channel.id}`;
         let session = globalStorage.get(userSessionKey);
 
-        console.log(`[QUIZ DEBUG] Button Triggered! CustomId: "${interaction.customId}" | User: ${interaction.user.tag} | Session Found: ${!!session}`);
-
         if (!session || !session.questions || session.questions.length === 0) {
-            return await interaction.reply({ content: '⚠️ **Session Inactive:** Select an open portal entry button or activate /startquiz directly.', ephemeral: true }).catch(err => console.error("Failed to send inactive session reply:", err));
+            return await interaction.reply({ content: '⚠️ **Session Inactive:** Select an open portal entry button or activate /startquiz directly.', ephemeral: true }).catch(err => console.log("Failed to send inactive session reply:", err));
         }
 
         const questions = session.questions;
@@ -356,18 +363,11 @@ client.on('interactionCreate', async (interaction) => {
             let currentScore = parseInt(parts[3]);
             const chosen = parts[4];
 
-            console.log(`[QUIZ DEBUG] Parsing Answer -> Index: ${idx}, Parsed Score: ${currentScore}, Chosen Option: ${chosen}`);
-
-            if (isNaN(idx) || isNaN(currentScore) || !questions[idx] || !chosen) {
-                console.error(`[QUIZ DEBUG] Error: Invalid parsed data. Question Exists: ${!!questions[idx]}`);
-                return;
-            }
+            if (isNaN(idx) || isNaN(currentScore) || !questions[idx] || !chosen) return;
 
             const activeItem = questions[idx];
             const isCorrect = chosen === activeItem.correct;
             if (isCorrect) currentScore++;
-
-            console.log(`[QUIZ DEBUG] Evaluation -> Verdict: ${isCorrect ? 'CORRECT' : 'INCORRECT'} | New Score: ${currentScore}/${idx + 1}`);
 
             const evaluationEmbed = buildQuizEmbed(activeItem, idx, questions.length, currentScore, idx + 1, quizTitle, chosen);
             const navigationRow = new ActionRowBuilder();
@@ -379,14 +379,13 @@ client.on('interactionCreate', async (interaction) => {
             } else {
                 evaluationEmbed.addFields({ name: '🏁 Deck Completed!', value: `📈 Private Metric Result: **${currentScore} / ${questions.length}** (${Math.round((currentScore / questions.length) * 100)}%)` });
                 globalStorage.delete(userSessionKey);
-                console.log(`[QUIZ DEBUG] Session wiped from memory. Quiz completed safely.`);
             }
 
             await interaction.update({ 
                 embeds: [evaluationEmbed], 
                 components: navigationRow.components.length ? [navigationRow] : [] 
             }).catch(err => {
-                console.error("❌ CRITICAL: Failed to update answer feedback on ephemeral message frame:", err);
+                console.log("❌ CRITICAL: Failed to update answer feedback:", err);
             });
 
         // Handle "Next Question" Navigation Triggers
@@ -394,14 +393,9 @@ client.on('interactionCreate', async (interaction) => {
             const parts = interaction.customId.split('_');
             const index = parseInt(parts[2]);
             const score = parseInt(parts[3]);
-            
-            console.log(`[QUIZ DEBUG] Parsing Next -> Target Index: ${index}, Carried Score: ${score}`);
 
             const activeItem = questions[index];
-            if (isNaN(index) || isNaN(score) || !activeItem) {
-                console.error(`[QUIZ DEBUG] Error: Next question payload invalid. Target Question Exists: ${!!activeItem}`);
-                return;
-            }
+            if (isNaN(index) || isNaN(score) || !activeItem) return;
 
             const questionEmbed = buildQuizEmbed(activeItem, index, questions.length, score, index, quizTitle);
             const btnRow = new ActionRowBuilder();
@@ -416,11 +410,11 @@ client.on('interactionCreate', async (interaction) => {
                 embeds: [questionEmbed], 
                 components: [btnRow] 
             }).catch(err => {
-                console.error("❌ CRITICAL: Failed to update next question card layout on ephemeral message frame:", err);
+                console.log("❌ CRITICAL: Failed to update next question card:", err);
             });
         }
     } catch (globalEventError) {
-        console.error('Caught unexpected interaction runtime bubble error:', globalEventError);
+        console.log('Caught unexpected interaction runtime bubble error:', globalEventError);
     }
 });
 
@@ -436,7 +430,7 @@ server.listen(PORT, '0.0.0.0', () => {
     client.login(TOKEN).then(() => {
         console.log('✅ Bot login request transmitted successfully.');
     }).catch((loginError) => {
-        console.error('❌ CRITICAL ERROR: Gateway registration handshake dropped:', loginError);
+        console.log('❌ CRITICAL ERROR: Gateway registration handshake dropped:', loginError);
         process.exit(1);
     });
 });
