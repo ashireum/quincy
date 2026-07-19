@@ -31,16 +31,15 @@ const globalStorage = new Map();
 const sharedRooms = new Map();   
 
 // --- PRE-COMPILED PARSER REGEXES ---
-// BULLETPROOFED: Matches "Question 22:", "Q.22", etc. OR a standalone line starting with "22. " or "22) " followed by actual word characters. Wont trigger on orphaned decimals like "28, PaCO2".
 const QUESTION_START_REGEX = /^(?:(?:Question|Q|No\.|Num)\s*[:.-]?\s*\d+|\d+\s*[\.\)]\s+(?=[A-Za-z"']))/i;
-// Helper to extract just the digits from the matched question line for validation
-const EXTRACT_DIGITS_REGEX = /(\d+)/;
-
 const ISOLATED_YEAR_REGEX = /^(19|20)\d{2}$/;
 const OPTION_START_REGEX = /^([A-D])\s*[\.\):\-\u2013\u2014]/i;
 const ANSWER_KEY_REGEX = /^(?:CORRECT\s+)?ANSWER\s*[:\-\s=]+\s*[\u201C\u201D"']?([A-D])[\u201C\u201D"']?(?:\.|\b)/i;
 const RATIONALE_START_REGEX = /^(?:Rationale|Explanation)\s*:\s*/i;
 const ARTIFACT_REGEX = /^(?:page\s*\d+|\d+\s*\/\s*\d+|copyright|ncm\s*\d+)/i;
+
+// NEW: Detects SATA Roman numeral criteria lines (e.g., "i. ", "iv. ", "ii) ")
+const SATA_NUMERAL_REGEX = /^(i{1,3}|iv|v|vi{1,3}|ix|x)\s*[\.\)]/i;
 
 function shuffleArray(array) {
     for (let i = array.length - 1; i > 0; i--) {
@@ -66,9 +65,7 @@ function parseQuestions(text) {
                 questions.push(currentQuestion);
             }
             
-            // Clean off the prefix identifier safely
             let cleanQuestionText = line.replace(QUESTION_START_REGEX, '').trim();
-            // If the regex left an isolated leading punctuation character from the split, clean it up
             if (cleanQuestionText.startsWith(':') || cleanQuestionText.startsWith('.') || cleanQuestionText.startsWith(')')) {
                 cleanQuestionText = cleanQuestionText.substring(1).trim();
             }
@@ -108,7 +105,18 @@ function parseQuestions(text) {
         }
 
         if (parsingStage === 'question') {
-            currentQuestion.question += ' ' + line;
+            // FIXED: If the new line is a Roman numeral item, append a newline character instead of a space
+            if (SATA_NUMERAL_REGEX.test(line)) {
+                currentQuestion.question += '\n' + line;
+            } else {
+                // If the previous text ended with a Roman numeral line, make sure the text after it splits onto a new line too
+                const lastLine = currentQuestion.question.split('\n').pop();
+                if (lastLine && SATA_NUMERAL_REGEX.test(lastLine.trim())) {
+                    currentQuestion.question += '\n' + line;
+                } else {
+                    currentQuestion.question += ' ' + line;
+                }
+            }
         } else if (parsingStage === 'options') {
             const existingLetters = Object.keys(currentQuestion.options);
             if (existingLetters.length > 0) {
@@ -125,7 +133,8 @@ function parseQuestions(text) {
     }
 
     return questions.map(q => {
-        q.question = q.question.replace(/\s+/g, ' ').trim();
+        // Clean up double spaces but preserve explicit user line breaks (\n) for SATA formatting
+        q.question = q.question.split('\n').map(segment => segment.replace(/\s+/g, ' ').trim()).join('\n');
         q.rationale = q.rationale.trim() || 'No specific study note provided.';
         let displayChoices = Object.keys(q.options).sort();
         if (SHUFFLE_CHOICES) {
@@ -145,12 +154,18 @@ function parseQuestions(text) {
     });
 }
 
-function buildQuizEmbed(item, index, total, score, answeredCount, quizTitle, chosen = null) {
+function buildQuizEmbed(item, index, total, score, answeredCount, quizTitle, chosen = null, description = null) {
     const embed = new EmbedBuilder().setColor(0x3498db);
+
+    // Build header details string
+    let embedDescription = `**Question ${index + 1} of ${total}**\n\n${item.question}`;
+    if (description) {
+        embedDescription = `*${description}*\n\n` + embedDescription;
+    }
 
     if (!chosen) {
         embed.setTitle(`📝 ${quizTitle}`)
-            .setDescription(`**Question ${index + 1} of ${total}**\n\n${item.question}`)
+            .setDescription(embedDescription)
             .setFooter({ text: `Question ${index + 1}/${total} • Current Score: ${score}/${answeredCount}` });
 
         item.originalOrder.forEach(letter => {
@@ -160,9 +175,15 @@ function buildQuizEmbed(item, index, total, score, answeredCount, quizTitle, cho
         });
     } else {
         const isCorrect = chosen === item.correct;
+        
+        let feedbackDescription = `**Your Verdict:** ${isCorrect ? 'Correct! 🎉' : 'Incorrect ❌'}\n\n**Question:**\n${item.question}`;
+        if (description) {
+            feedbackDescription = `*${description}*\n\n` + feedbackDescription;
+        }
+
         embed.setColor(isCorrect ? 0x2ecc71 : 0xe74c3c)
             .setTitle(`📝 ${quizTitle} — Feedback`)
-            .setDescription(`**Your Verdict:** ${isCorrect ? 'Correct! 🎉' : 'Incorrect ❌'}\n\n**Question:**\n${item.question}`)
+            .setDescription(feedbackDescription)
             .setFooter({ text: `Progress: ${index + 1} of ${total} • Score: ${score} Correct` });
 
         item.originalOrder.forEach(letter => {
@@ -203,6 +224,12 @@ client.once('ready', async () => {
                     description: 'Give this quiz session a custom title (optional)',
                     type: ApplicationCommandOptionType.String,
                     required: false
+                },
+                {
+                    name: 'desc',
+                    description: 'Brief description of topics covered (max 200 chars)',
+                    type: ApplicationCommandOptionType.String,
+                    required: false
                 }
             ]
         },
@@ -219,6 +246,12 @@ client.once('ready', async () => {
                 {
                     name: 'title',
                     description: 'Give this shared room quiz a custom title (optional)',
+                    type: ApplicationCommandOptionType.String,
+                    required: false
+                },
+                {
+                    name: 'desc',
+                    description: 'Brief description of topics covered (max 200 chars)',
                     type: ApplicationCommandOptionType.String,
                     required: false
                 }
@@ -252,6 +285,15 @@ client.on('interactionCreate', async (interaction) => {
             const inputTitle = interaction.options.getString('title');
             const quizTitle = inputTitle ? inputTitle.trim() : attachment.name.replace(/\.[^/.]+$/, "");
 
+            // Safely retrieve description and clip if it passes character boundary limit rules
+            let quizDesc = interaction.options.getString('desc');
+            if (quizDesc) {
+                quizDesc = quizDesc.trim();
+                if (quizDesc.length > 200) {
+                    quizDesc = quizDesc.substring(0, 197) + '...';
+                }
+            }
+
             if (interaction.commandName === 'startquiz') {
                 await interaction.deferReply({ ephemeral: true }).catch(console.log);
 
@@ -264,10 +306,10 @@ client.on('interactionCreate', async (interaction) => {
                     if (SHUFFLE_QUESTIONS) questions = shuffleArray(questions);
 
                     const userSessionKey = `${interaction.user.id}_${interaction.channel.id}`;
-                    globalStorage.set(userSessionKey, { userId: interaction.user.id, questions, title: quizTitle });
+                    globalStorage.set(userSessionKey, { userId: interaction.user.id, questions, title: quizTitle, description: quizDesc });
 
                     const activeItem = questions[0];
-                    const firstQuestionEmbed = buildQuizEmbed(activeItem, 0, questions.length, 0, 0, quizTitle);
+                    const firstQuestionEmbed = buildQuizEmbed(activeItem, 0, questions.length, 0, 0, quizTitle, null, quizDesc);
                     const btnRow = new ActionRowBuilder();
                     
                     activeItem.originalOrder.forEach(letter => {
@@ -295,9 +337,15 @@ client.on('interactionCreate', async (interaction) => {
 
                     await interaction.deleteReply().catch(console.log);
 
+                    let roomMessageText = `**Host:** ${interaction.user}\n**Operational Items:** ${questions.length} questions loaded.\n\n`;
+                    if (quizDesc) {
+                        roomMessageText = `**Description:** *${quizDesc}*\n` + roomMessageText;
+                    }
+                    roomMessageText += `Click the portal switch below to claim your private study session.`;
+
                     const roomEmbed = new EmbedBuilder()
                         .setTitle(`🎯 Shared Review Room: ${quizTitle}`)
-                        .setDescription(`**Host:** ${interaction.user}\n**Operational Items:** ${questions.length} questions loaded.\n\nClick the portal switch below to claim your private study session.`)
+                        .setDescription(roomMessageText)
                         .setColor(0x9b59b6)
                         .setFooter({ text: 'Your personal progress and scores remain strictly private.' });
 
@@ -308,7 +356,7 @@ client.on('interactionCreate', async (interaction) => {
                     const sentMessage = await interaction.channel.send({ embeds: [roomEmbed], components: [joinRow] }).catch(console.log);
                     
                     if (sentMessage) {
-                        sharedRooms.set(sentMessage.id, { questions, title: quizTitle });
+                        sharedRooms.set(sentMessage.id, { questions, title: quizTitle, description: quizDesc });
                     }
                 } catch (error) {
                     console.log('Error handling public room init:', error);
@@ -331,10 +379,10 @@ client.on('interactionCreate', async (interaction) => {
             if (SHUFFLE_QUESTIONS) assignedQuestions = shuffleArray(assignedQuestions);
 
             const userSessionKey = `${interaction.user.id}_${channel.id}`;
-            globalStorage.set(userSessionKey, { userId: interaction.user.id, questions: assignedQuestions, title: roomData.title });
+            globalStorage.set(userSessionKey, { userId: interaction.user.id, questions: assignedQuestions, title: roomData.title, description: roomData.description });
 
             const activeItem = assignedQuestions[0];
-            const initialEmbed = buildQuizEmbed(activeItem, 0, assignedQuestions.length, 0, 0, roomData.title);
+            const initialEmbed = buildQuizEmbed(activeItem, 0, assignedQuestions.length, 0, 0, roomData.title, null, roomData.description);
             const choiceRow = new ActionRowBuilder();
             
             activeItem.originalOrder.forEach(letter => {
@@ -355,6 +403,7 @@ client.on('interactionCreate', async (interaction) => {
 
         const questions = session.questions;
         const quizTitle = session.title || 'Review Session';
+        const quizDesc = session.description || null;
 
         // Handle Answer Option Selection (A, B, C, D)
         if (interaction.customId.startsWith('dyn_answer_')) {
@@ -369,7 +418,7 @@ client.on('interactionCreate', async (interaction) => {
             const isCorrect = chosen === activeItem.correct;
             if (isCorrect) currentScore++;
 
-            const evaluationEmbed = buildQuizEmbed(activeItem, idx, questions.length, currentScore, idx + 1, quizTitle, chosen);
+            const evaluationEmbed = buildQuizEmbed(activeItem, idx, questions.length, currentScore, idx + 1, quizTitle, chosen, quizDesc);
             const navigationRow = new ActionRowBuilder();
 
             if (idx + 1 < questions.length) {
@@ -397,7 +446,7 @@ client.on('interactionCreate', async (interaction) => {
             const activeItem = questions[index];
             if (isNaN(index) || isNaN(score) || !activeItem) return;
 
-            const questionEmbed = buildQuizEmbed(activeItem, index, questions.length, score, index, quizTitle);
+            const questionEmbed = buildQuizEmbed(activeItem, index, questions.length, score, index, quizTitle, null, quizDesc);
             const btnRow = new ActionRowBuilder();
             
             activeItem.originalOrder.forEach(letter => {
