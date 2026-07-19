@@ -2,6 +2,8 @@ const { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder
 const pdfParse = require('pdf-parse');
 const axios = require('axios');
 const http = require('http');
+const fs = require('fs');
+const path = require('path');
 
 // --- GLOBAL ERROR PROTECTION LAYER (Prevents Render Process Crashes) ---
 process.on('uncaughtException', (error) => {
@@ -27,8 +29,36 @@ if (!TOKEN) {
 console.log('✅ Environment parameters verified successfully.');
 
 // --- RUNTIME MEMORY STORAGE REGISTRIES ---
-const globalStorage = new Map(); 
-const sharedRooms = new Map();   
+const globalStorage = new Map(); // Private session configurations are fine in RAM
+
+// --- PERSISTENT ROOM STORAGE LAYER (Survives Bot Restarts/Updates) ---
+const ROOMS_FILE_PATH = path.join(__dirname, 'shared_rooms.json');
+
+function loadSharedRooms() {
+    try {
+        if (fs.existsSync(ROOMS_FILE_PATH)) {
+            const data = fs.readFileSync(ROOMS_FILE_PATH, 'utf8');
+            const parsed = JSON.parse(data);
+            console.log(`💾 Local Database: Restored ${Object.keys(parsed).length} active shared rooms from file storage.`);
+            return new Map(Object.entries(parsed));
+        }
+    } catch (err) {
+        console.error('⚠️ Persistence Warning: Failed to parse shared_rooms.json safely:', err);
+    }
+    return new Map();
+}
+
+function saveSharedRooms(roomsMap) {
+    try {
+        const obj = Object.fromEntries(roomsMap);
+        fs.writeFileSync(ROOMS_FILE_PATH, JSON.stringify(obj, null, 2), 'utf8');
+    } catch (err) {
+        console.error('❌ Database Sync Failure: Failed to write shared_rooms.json:', err);
+    }
+}
+
+// Load existing rooms on boot
+const sharedRooms = loadSharedRooms();
 
 // --- PRE-COMPILED PARSER REGEXES ---
 const QUESTION_START_REGEX = /^(?:(?:Question|Q|No\.|Num)\s*[:.-]?\s*\d+|\d+\s*[\.\)]\s+(?=[A-Za-z"']))/i;
@@ -37,8 +67,6 @@ const OPTION_START_REGEX = /^([A-D])\s*[\.\):\-\u2013\u2014]/i;
 const ANSWER_KEY_REGEX = /^(?:CORRECT\s+)?ANSWER\s*[:\-\s=]+\s*[\u201C\u201D"']?([A-D])[\u201C\u201D"']?(?:\.|\b)/i;
 const RATIONALE_START_REGEX = /^(?:Rationale|Explanation)\s*:\s*/i;
 const ARTIFACT_REGEX = /^(?:page\s*\d+|\d+\s*\/\s*\d+|copyright|ncm\s*\d+)/i;
-
-// NEW: Detects SATA Roman numeral criteria lines (e.g., "i. ", "iv. ", "ii) ")
 const SATA_NUMERAL_REGEX = /^(i{1,3}|iv|v|vi{1,3}|ix|x)\s*[\.\)]/i;
 
 function shuffleArray(array) {
@@ -105,11 +133,9 @@ function parseQuestions(text) {
         }
 
         if (parsingStage === 'question') {
-            // FIXED: If the new line is a Roman numeral item, append a newline character instead of a space
             if (SATA_NUMERAL_REGEX.test(line)) {
                 currentQuestion.question += '\n' + line;
             } else {
-                // If the previous text ended with a Roman numeral line, make sure the text after it splits onto a new line too
                 const lastLine = currentQuestion.question.split('\n').pop();
                 if (lastLine && SATA_NUMERAL_REGEX.test(lastLine.trim())) {
                     currentQuestion.question += '\n' + line;
@@ -133,7 +159,6 @@ function parseQuestions(text) {
     }
 
     return questions.map(q => {
-        // Clean up double spaces but preserve explicit user line breaks (\n) for SATA formatting
         q.question = q.question.split('\n').map(segment => segment.replace(/\s+/g, ' ').trim()).join('\n');
         q.rationale = q.rationale.trim() || 'No specific study note provided.';
         let displayChoices = Object.keys(q.options).sort();
@@ -157,7 +182,6 @@ function parseQuestions(text) {
 function buildQuizEmbed(item, index, total, score, answeredCount, quizTitle, chosen = null, description = null) {
     const embed = new EmbedBuilder().setColor(0x3498db);
 
-    // Build header details string
     let embedDescription = `**Question ${index + 1} of ${total}**\n\n${item.question}`;
     if (description) {
         embedDescription = `*${description}*\n\n` + embedDescription;
@@ -285,7 +309,6 @@ client.on('interactionCreate', async (interaction) => {
             const inputTitle = interaction.options.getString('title');
             const quizTitle = inputTitle ? inputTitle.trim() : attachment.name.replace(/\.[^/.]+$/, "");
 
-            // Safely retrieve description and clip if it passes character boundary limit rules
             let quizDesc = interaction.options.getString('desc');
             if (quizDesc) {
                 quizDesc = quizDesc.trim();
@@ -356,7 +379,9 @@ client.on('interactionCreate', async (interaction) => {
                     const sentMessage = await interaction.channel.send({ embeds: [roomEmbed], components: [joinRow] }).catch(console.log);
                     
                     if (sentMessage) {
+                        // PERSISTENCE SAVE: Write to Map, then instantly write to disk
                         sharedRooms.set(sentMessage.id, { questions, title: quizTitle, description: quizDesc });
+                        saveSharedRooms(sharedRooms);
                     }
                 } catch (error) {
                     console.log('Error handling public room init:', error);
