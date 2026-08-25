@@ -228,7 +228,7 @@ const client = new Client({
 });
 
 // --- AUTOMATIC COMMAND REGISTRATION ON BOOT ---
-client.once('ready', async () => {
+client.once('clientReady', async () => {
     console.log(`🤖 Discord Gateway Connected! Active session user: ${client.user.tag}`);
 
     const commands = [
@@ -296,7 +296,7 @@ client.once('ready', async () => {
 client.on('interactionCreate', async (interaction) => {
     try {
         if (interaction.isChatInputCommand()) {
-            // STEP 1: DEFER IMMEDIATELY BEFORE ANY OTHER OPERATION
+            // DEFER IMMEDIATELY BEFORE ANY HTTP REQUEST OR HEAVY PARSING
             await interaction.deferReply({ ephemeral: interaction.commandName === 'startquiz' }).catch(console.log);
 
             const attachment = interaction.options.getAttachment('reviewer');
@@ -323,7 +323,11 @@ client.on('interactionCreate', async (interaction) => {
 
             if (interaction.commandName === 'startquiz') {
                 try {
-                    const response = await axios.get(attachment.url, { responseType: isPDF ? 'arraybuffer' : 'text', timeout: 15000 });
+                    const response = await axios.get(attachment.url, { 
+                        responseType: isPDF ? 'arraybuffer' : 'text', 
+                        timeout: 8000 
+                    });
+                    
                     let extractedText = isPDF ? (await pdfParse(Buffer.from(response.data))).text : response.data;
                     let questions = parseQuestions(extractedText);
                     
@@ -352,7 +356,11 @@ client.on('interactionCreate', async (interaction) => {
 
             if (interaction.commandName === 'quiz') {
                 try {
-                    const response = await axios.get(attachment.url, { responseType: isPDF ? 'arraybuffer' : 'text', timeout: 15000 });
+                    const response = await axios.get(attachment.url, { 
+                        responseType: isPDF ? 'arraybuffer' : 'text', 
+                        timeout: 8000 
+                    });
+                    
                     let extractedText = isPDF ? (await pdfParse(Buffer.from(response.data))).text : response.data;
                     let questions = parseQuestions(extractedText);
                     
@@ -374,13 +382,11 @@ client.on('interactionCreate', async (interaction) => {
                         new ButtonBuilder().setCustomId('room_join_portal').setLabel('Join Quiz Module 🎯').setStyle(ButtonStyle.Primary)
                     );
 
-                    // Send the public room portal directly into the channel
                     const sentMessage = await interaction.channel.send({ embeds: [roomEmbed], components: [joinRow] }).catch(console.log);
                     
                     if (sentMessage) {
                         sharedRooms.set(sentMessage.id, { questions, title: quizTitle, description: quizDesc });
                         saveSharedRooms(sharedRooms);
-                        // Clean up the initial deferred acknowledgment message
                         await interaction.deleteReply().catch(console.log);
                     } else {
                         await interaction.editReply('❌ **System Error:** Failed to output room portal.').catch(console.log);
@@ -494,7 +500,7 @@ client.on('interactionCreate', async (interaction) => {
     }
 });
 
-// --- RENDER HEALTH PROTOCOL WEB SERVER LAYER ---
+// --- RENDER HEALTH PROTOCOL & SYNCHRONIZED BOT LOGIN ---
 const server = http.createServer((req, res) => {
     res.writeHead(200, { 'Content-Type': 'text/plain' });
     res.end('OK');
@@ -502,12 +508,12 @@ const server = http.createServer((req, res) => {
 
 server.listen(PORT, '0.0.0.0', () => {
     console.log(`🌐 Render Health Check Interface bound to 0.0.0.0:${PORT}`);
-});
-
-// Login to Discord outside of HTTP server listener
-client.login(TOKEN).then(() => {
-    console.log('✅ Bot login request transmitted successfully.');
-}).catch((loginError) => {
-    console.log('❌ CRITICAL ERROR: Gateway registration handshake dropped:', loginError);
-    process.exit(1);
+    
+    // Login to Discord immediately inside the port listener callback
+    client.login(TOKEN).then(() => {
+        console.log('✅ Bot login request transmitted successfully.');
+    }).catch((loginError) => {
+        console.log('❌ CRITICAL ERROR: Gateway registration handshake dropped:', loginError);
+        process.exit(1);
+    });
 });
