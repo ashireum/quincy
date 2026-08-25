@@ -318,6 +318,7 @@ client.on('interactionCreate', async (interaction) => {
             }
 
             if (interaction.commandName === 'startquiz') {
+                // IMMEDIATELY DEFER REPLIES TO PREVENT DISCORD 3-SECOND TIMEOUT
                 await interaction.deferReply({ ephemeral: true }).catch(console.log);
 
                 try {
@@ -349,6 +350,7 @@ client.on('interactionCreate', async (interaction) => {
             }
 
             if (interaction.commandName === 'quiz') {
+                // IMMEDIATELY DEFER REPLIES TO PREVENT DISCORD 3-SECOND TIMEOUT
                 await interaction.deferReply({ ephemeral: true }).catch(console.log);
 
                 try {
@@ -395,9 +397,12 @@ client.on('interactionCreate', async (interaction) => {
         const channel = interaction.channel;
 
         if (interaction.customId === 'room_join_portal') {
+            // ACKNOWLEDGE BUTTON CLICK IMMEDIATELY TO PREVENT 3-SECOND TIMEOUT
+            await interaction.deferReply({ ephemeral: true }).catch(console.log);
+
             const roomData = sharedRooms.get(interaction.message.id);
             if (!roomData || !roomData.questions) {
-                return await interaction.reply({ content: '⚠️ **Room Expired:** This host deck is no longer in memory.', ephemeral: true }).catch(console.log);
+                return await interaction.editReply({ content: '⚠️ **Room Expired:** This host deck is no longer in memory.' }).catch(console.log);
             }
 
             let assignedQuestions = [...roomData.questions];
@@ -416,7 +421,7 @@ client.on('interactionCreate', async (interaction) => {
                 }
             });
 
-            return await interaction.reply({ embeds: [initialEmbed], components: [choiceRow], ephemeral: true }).catch(console.log);
+            return await interaction.editReply({ embeds: [initialEmbed], components: [choiceRow] }).catch(console.log);
         }
 
         const userSessionKey = `${interaction.user.id}_${channel.id}`;
@@ -500,11 +505,12 @@ const server = http.createServer((req, res) => {
 
 server.listen(PORT, '0.0.0.0', () => {
     console.log(`🌐 Render Health Check Interface bound to 0.0.0.0:${PORT}`);
-    
-    client.login(TOKEN).then(() => {
-        console.log('✅ Bot login request transmitted successfully.');
-    }).catch((loginError) => {
-        console.log('❌ CRITICAL ERROR: Gateway registration handshake dropped:', loginError);
-        process.exit(1);
-    });
+});
+
+// Login to Discord outside of HTTP server listener
+client.login(TOKEN).then(() => {
+    console.log('✅ Bot login request transmitted successfully.');
+}).catch((loginError) => {
+    console.log('❌ CRITICAL ERROR: Gateway registration handshake dropped:', loginError);
+    process.exit(1);
 });
