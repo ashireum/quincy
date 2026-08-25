@@ -5,7 +5,7 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 
-// --- GLOBAL ERROR PROTECTION LAYER (Prevents Render Process Crashes) ---
+// --- GLOBAL ERROR PROTECTION LAYER ---
 process.on('uncaughtException', (error) => {
     console.log('🚨 CRITICAL UNCAUGHT EXCEPTION AUDITED:', error.stack || error);
 });
@@ -29,9 +29,9 @@ if (!TOKEN) {
 console.log('✅ Environment parameters verified successfully.');
 
 // --- RUNTIME MEMORY STORAGE REGISTRIES ---
-const globalStorage = new Map(); // Private session configurations are fine in RAM
+const globalStorage = new Map();
 
-// --- PERSISTENT ROOM STORAGE LAYER (Survives Bot Restarts/Updates) ---
+// --- PERSISTENT ROOM STORAGE LAYER ---
 const ROOMS_FILE_PATH = path.join(__dirname, 'shared_rooms.json');
 
 function loadSharedRooms() {
@@ -57,7 +57,6 @@ function saveSharedRooms(roomsMap) {
     }
 }
 
-// Load existing rooms on boot
 const sharedRooms = loadSharedRooms();
 
 // --- PRE-COMPILED PARSER REGEXES ---
@@ -297,13 +296,18 @@ client.once('ready', async () => {
 client.on('interactionCreate', async (interaction) => {
     try {
         if (interaction.isChatInputCommand()) {
+            // STEP 1: DEFER IMMEDIATELY BEFORE ANY OTHER OPERATION
+            await interaction.deferReply({ ephemeral: interaction.commandName === 'startquiz' }).catch(console.log);
+
             const attachment = interaction.options.getAttachment('reviewer');
-            if (!attachment) return await interaction.reply({ content: '❌ Missing file attachment parameters.', ephemeral: true }).catch(console.log);
+            if (!attachment) {
+                return await interaction.editReply({ content: '❌ Missing file attachment parameters.' }).catch(console.log);
+            }
 
             const isPDF = attachment.name.endsWith('.pdf');
             const isTXT = attachment.name.endsWith('.txt');
             if (!isPDF && !isTXT) {
-                return await interaction.reply({ content: '❌ Invalid format structure. Please supply .pdf or .txt items.', ephemeral: true }).catch(console.log);
+                return await interaction.editReply({ content: '❌ Invalid format structure. Please supply .pdf or .txt items.' }).catch(console.log);
             }
 
             const inputTitle = interaction.options.getString('title');
@@ -318,9 +322,6 @@ client.on('interactionCreate', async (interaction) => {
             }
 
             if (interaction.commandName === 'startquiz') {
-                // IMMEDIATELY DEFER REPLIES TO PREVENT DISCORD 3-SECOND TIMEOUT
-                await interaction.deferReply({ ephemeral: true }).catch(console.log);
-
                 try {
                     const response = await axios.get(attachment.url, { responseType: isPDF ? 'arraybuffer' : 'text', timeout: 15000 });
                     let extractedText = isPDF ? (await pdfParse(Buffer.from(response.data))).text : response.data;
@@ -350,17 +351,12 @@ client.on('interactionCreate', async (interaction) => {
             }
 
             if (interaction.commandName === 'quiz') {
-                // IMMEDIATELY DEFER REPLIES TO PREVENT DISCORD 3-SECOND TIMEOUT
-                await interaction.deferReply({ ephemeral: true }).catch(console.log);
-
                 try {
                     const response = await axios.get(attachment.url, { responseType: isPDF ? 'arraybuffer' : 'text', timeout: 15000 });
                     let extractedText = isPDF ? (await pdfParse(Buffer.from(response.data))).text : response.data;
                     let questions = parseQuestions(extractedText);
                     
                     if (questions.length === 0) return await interaction.editReply("❌ **Parsing Failure:** Couldn't map structured content patterns.").catch(console.log);
-
-                    await interaction.deleteReply().catch(console.log);
 
                     let roomMessageText = `**Host:** ${interaction.user}\n**Operational Items:** ${questions.length} questions loaded.\n\n`;
                     if (quizDesc) {
@@ -378,12 +374,16 @@ client.on('interactionCreate', async (interaction) => {
                         new ButtonBuilder().setCustomId('room_join_portal').setLabel('Join Quiz Module 🎯').setStyle(ButtonStyle.Primary)
                     );
 
+                    // Send the public room portal directly into the channel
                     const sentMessage = await interaction.channel.send({ embeds: [roomEmbed], components: [joinRow] }).catch(console.log);
                     
                     if (sentMessage) {
-                        // PERSISTENCE SAVE: Write to Map, then instantly write to disk
                         sharedRooms.set(sentMessage.id, { questions, title: quizTitle, description: quizDesc });
                         saveSharedRooms(sharedRooms);
+                        // Clean up the initial deferred acknowledgment message
+                        await interaction.deleteReply().catch(console.log);
+                    } else {
+                        await interaction.editReply('❌ **System Error:** Failed to output room portal.').catch(console.log);
                     }
                 } catch (error) {
                     console.log('Error handling public room init:', error);
@@ -397,7 +397,6 @@ client.on('interactionCreate', async (interaction) => {
         const channel = interaction.channel;
 
         if (interaction.customId === 'room_join_portal') {
-            // ACKNOWLEDGE BUTTON CLICK IMMEDIATELY TO PREVENT 3-SECOND TIMEOUT
             await interaction.deferReply({ ephemeral: true }).catch(console.log);
 
             const roomData = sharedRooms.get(interaction.message.id);
@@ -435,7 +434,6 @@ client.on('interactionCreate', async (interaction) => {
         const quizTitle = session.title || 'Review Session';
         const quizDesc = session.description || null;
 
-        // Handle Answer Option Selection (A, B, C, D)
         if (interaction.customId.startsWith('dyn_answer_')) {
             const parts = interaction.customId.split('_');
             const idx = parseInt(parts[2]);
@@ -467,7 +465,6 @@ client.on('interactionCreate', async (interaction) => {
                 console.log("❌ CRITICAL: Failed to update answer feedback:", err);
             });
 
-        // Handle "Next Question" Navigation Triggers
         } else if (interaction.customId.startsWith('dyn_next_')) {
             const parts = interaction.customId.split('_');
             const index = parseInt(parts[2]);
