@@ -1,10 +1,17 @@
 {
-  "name": "quincy",
+  "name": "quincy-quiz-bot",
   "version": "1.0.0",
+  "description": "Production-grade Discord Quiz Bot for study materials",
   "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
   "dependencies": {
-    "discord.js": "^14.14.1",
-    "pdf-parse": "^1.1.1",
-    "axios": "^1.6.8"
+    "axios": "^1.7.9",
+    "discord.js": "^14.18.0",
+    "pdf-parse": "^1.1.1"
+  },
+  "engines": {
+    "node": ">=18.0.0"
   }
 }
