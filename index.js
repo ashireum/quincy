@@ -227,6 +227,19 @@ const client = new Client({
     intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages]
 });
 
+// --- PERMANENT GATEWAY RECONNECT HANDLERS ---
+client.on('shardDisconnect', (event, id) => {
+    console.log(`⚠️ Gateway Disconnected (Shard ${id}). Connection dropped overnight.`);
+});
+
+client.on('shardReconnecting', (id) => {
+    console.log(`⏳ Gateway Reconnecting (Shard ${id})... Attempting session resume.`);
+});
+
+client.on('shardResume', (id, replayedEvents) => {
+    console.log(`✅ Gateway Reconnected successfully (Shard ${id}). Replayed ${replayedEvents} missed events.`);
+});
+
 // --- AUTOMATIC COMMAND REGISTRATION ON BOOT ---
 client.once('clientReady', async () => {
     console.log(`🤖 Discord Gateway Connected! Active session user: ${client.user.tag}`);
