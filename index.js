@@ -296,7 +296,6 @@ client.once('clientReady', async () => {
 client.on('interactionCreate', async (interaction) => {
     try {
         if (interaction.isChatInputCommand()) {
-            // DEFER IMMEDIATELY BEFORE ANY HTTP REQUEST OR HEAVY PARSING
             await interaction.deferReply({ ephemeral: interaction.commandName === 'startquiz' }).catch(console.log);
 
             const attachment = interaction.options.getAttachment('reviewer');
@@ -506,14 +505,15 @@ const server = http.createServer((req, res) => {
     res.end('OK');
 });
 
-server.listen(PORT, '0.0.0.0', () => {
+server.listen(PORT, '0.0.0.0', async () => {
     console.log(`🌐 Render Health Check Interface bound to 0.0.0.0:${PORT}`);
+    console.log('⏳ Initiating Discord Gateway login sequence...');
     
-    // Login to Discord immediately inside the port listener callback
-    client.login(TOKEN).then(() => {
-        console.log('✅ Bot login request transmitted successfully.');
-    }).catch((loginError) => {
-        console.log('❌ CRITICAL ERROR: Gateway registration handshake dropped:', loginError);
-        process.exit(1);
-    });
+    try {
+        await client.login(TOKEN);
+        console.log('✅ client.login() executed successfully.');
+    } catch (loginError) {
+        console.error('❌ CRITICAL GATEWAY LOGIN FAILURE:');
+        console.error(loginError);
+    }
 });
