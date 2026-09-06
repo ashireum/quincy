@@ -2,8 +2,7 @@ const { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder
 const pdfParse = require('pdf-parse');
 const axios = require('axios');
 const http = require('http');
-const fs = require('fs');
-const path = require('path');
+const mongoose = require('mongoose');
 
 // --- GLOBAL ERROR PROTECTION LAYER ---
 process.on('uncaughtException', (error) => {
@@ -21,6 +20,7 @@ const SHUFFLE_CHOICES = false;
 console.log('⏳ Validating system environment variables...');
 const TOKEN = process.env.DISCORD_TOKEN;
 const PORT = process.env.PORT || 3000;
+const MONGODB_URI = process.env.MONGODB_URI;
 
 if (!TOKEN) {
     console.log('❌ DEPLOYMENT CRITICAL ERROR: "DISCORD_TOKEN" is missing from your environment variables.');
@@ -28,36 +28,27 @@ if (!TOKEN) {
 }
 console.log('✅ Environment parameters verified successfully.');
 
-// --- RUNTIME MEMORY STORAGE REGISTRIES ---
+// --- CONNECT TO MONGODB ATLAS ---
+if (MONGODB_URI) {
+    mongoose.connect(MONGODB_URI)
+        .then(() => console.log('💾 MongoDB Cloud Storage Connected Successfully!'))
+        .catch(err => console.error('❌ MongoDB Connection Failure:', err));
+} else {
+    console.warn('⚠️ MONGODB_URI is missing from environment variables. Decks will not persist!');
+}
+
+// --- DEFINE MONGODB SCHEMAS ---
+const QuizDeck = mongoose.model('QuizDeck', new mongoose.Schema({
+    deckId: { type: String, required: true, unique: true }, // Discord Message ID
+    title: { type: String, required: true },
+    description: { type: String, default: null },
+    creatorId: { type: String, required: true },
+    createdAt: { type: Date, default: Date.now },
+    questions: Array
+}));
+
+// --- RUNTIME MEMORY STORAGE REGISTRY (For Active Play Sessions Only) ---
 const globalStorage = new Map();
-
-// --- PERSISTENT ROOM STORAGE LAYER ---
-const ROOMS_FILE_PATH = path.join(__dirname, 'shared_rooms.json');
-
-function loadSharedRooms() {
-    try {
-        if (fs.existsSync(ROOMS_FILE_PATH)) {
-            const data = fs.readFileSync(ROOMS_FILE_PATH, 'utf8');
-            const parsed = JSON.parse(data);
-            console.log(`💾 Local Database: Restored ${Object.keys(parsed).length} active shared rooms from file storage.`);
-            return new Map(Object.entries(parsed));
-        }
-    } catch (err) {
-        console.error('⚠️ Persistence Warning: Failed to parse shared_rooms.json safely:', err);
-    }
-    return new Map();
-}
-
-function saveSharedRooms(roomsMap) {
-    try {
-        const obj = Object.fromEntries(roomsMap);
-        fs.writeFileSync(ROOMS_FILE_PATH, JSON.stringify(obj, null, 2), 'utf8');
-    } catch (err) {
-        console.error('❌ Database Sync Failure: Failed to write shared_rooms.json:', err);
-    }
-}
-
-const sharedRooms = loadSharedRooms();
 
 // --- PRE-COMPILED PARSER REGEXES ---
 const QUESTION_START_REGEX = /^(?:(?:Question|Q|No\.|Num)\s*[:.-]?\s*\d+|\d+\s*[\.\)]\s+(?=[A-Za-z"']))/i;
@@ -397,8 +388,15 @@ client.on('interactionCreate', async (interaction) => {
                     const sentMessage = await interaction.channel.send({ embeds: [roomEmbed], components: [joinRow] }).catch(console.log);
                     
                     if (sentMessage) {
-                        sharedRooms.set(sentMessage.id, { questions, title: quizTitle, description: quizDesc });
-                        saveSharedRooms(sharedRooms);
+                        // SAVE PERMANENTLY TO MONGODB ATLAS
+                        await QuizDeck.create({
+                            deckId: sentMessage.id,
+                            title: quizTitle,
+                            description: quizDesc,
+                            creatorId: interaction.user.id,
+                            questions: questions
+                        }).catch(err => console.error('❌ MongoDB Write Error:', err));
+
                         await interaction.deleteReply().catch(console.log);
                     } else {
                         await interaction.editReply('❌ **System Error:** Failed to output room portal.').catch(console.log);
@@ -417,9 +415,11 @@ client.on('interactionCreate', async (interaction) => {
         if (interaction.customId === 'room_join_portal') {
             await interaction.deferReply({ ephemeral: true }).catch(console.log);
 
-            const roomData = sharedRooms.get(interaction.message.id);
-            if (!roomData || !roomData.questions) {
-                return await interaction.editReply({ content: '⚠️ **Room Expired:** This host deck is no longer in memory.' }).catch(console.log);
+            // READ PERMANENTLY FROM MONGODB ATLAS
+            const roomData = await QuizDeck.findOne({ deckId: interaction.message.id }).catch(console.log);
+
+            if (!roomData || !roomData.questions || roomData.questions.length === 0) {
+                return await interaction.editReply({ content: '⚠️ **Room Expired:** This host deck could not be found in the cloud database.' }).catch(console.log);
             }
 
             let assignedQuestions = [...roomData.questions];
