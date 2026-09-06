@@ -505,16 +505,19 @@ client.on('interactionCreate', async (interaction) => {
     }
 });
 
-// --- RENDER HEALTH PROTOCOL & SYNCHRONIZED BOT LOGIN ---
+// --- DIRECT ISOLATED BOOT SEQUENCE ---
 const server = http.createServer((req, res) => {
     res.writeHead(200, { 'Content-Type': 'text/plain' });
     res.end('OK');
 });
 
-server.listen(PORT, '0.0.0.0', async () => {
+// Bind health check port immediately so Render stays alive
+server.listen(PORT, '0.0.0.0', () => {
     console.log(`🌐 Render Health Check Interface bound to 0.0.0.0:${PORT}`);
-    
-    // 1. Connect to MongoDB Atlas
+});
+
+// Execute Gateway and Database authentication directly at root execution level
+(async () => {
     if (MONGODB_URI) {
         try {
             await mongoose.connect(MONGODB_URI);
@@ -522,16 +525,21 @@ server.listen(PORT, '0.0.0.0', async () => {
         } catch (dbErr) {
             console.error('❌ MongoDB Connection Failure:', dbErr);
         }
-    } else {
-        console.warn('⚠️ MONGODB_URI missing from environment variables.');
     }
 
-    // 2. Login to Discord Gateway
-    console.log('⏳ Initiating Discord Gateway login sequence...');
+    console.log('⏳ Initiating direct client.login()...');
+    
+    // Set an explicit 10-second timeout force-kill so it CANNOT hang silently
+    const loginTimeout = setTimeout(() => {
+        console.error('❌ DISCORD GATEWAY HANDSHAKE TIMEOUT: Discord failed to respond within 10 seconds.');
+    }, 10000);
+
     try {
         await client.login(TOKEN);
-        console.log('✅ client.login() call triggered successfully.');
+        clearTimeout(loginTimeout);
+        console.log('✅ client.login() promise resolved successfully!');
     } catch (loginError) {
-        console.error('❌ CRITICAL GATEWAY LOGIN FAILURE:', loginError);
+        clearTimeout(loginTimeout);
+        console.error('❌ EXPLICIT LOGIN ERROR ENCOUNTERED:', loginError);
     }
-});
+})();
