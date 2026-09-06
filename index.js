@@ -204,13 +204,14 @@ function buildQuizEmbed(item, index, total, score, answeredCount, quizTitle, cho
     return embed;
 }
 
-// --- INITIALIZE CLIENT INSTANCE ---
+// --- INITIALIZE CLIENT INSTANCE WITH EXPANDED TIMEOUTS ---
 const client = new Client({
     intents: [
         GatewayIntentBits.Guilds,
         GatewayIntentBits.GuildMessages,
         GatewayIntentBits.MessageContent
-    ]
+    ],
+    rest: { timeout: 30000 }
 });
 
 // --- PERMANENT GATEWAY RECONNECT HANDLERS ---
@@ -511,16 +512,14 @@ const server = http.createServer((req, res) => {
     res.end('OK');
 });
 
-// Bind health check port immediately so Render stays alive
 server.listen(PORT, '0.0.0.0', () => {
     console.log(`🌐 Render Health Check Interface bound to 0.0.0.0:${PORT}`);
 });
 
-// Execute Gateway and Database authentication directly at root execution level
 (async () => {
     if (MONGODB_URI) {
         try {
-            await mongoose.connect(MONGODB_URI);
+            await mongoose.connect(MONGODB_URI, { serverSelectionTimeoutMS: 5000 });
             console.log('💾 MongoDB Cloud Storage Connected Successfully!');
         } catch (dbErr) {
             console.error('❌ MongoDB Connection Failure:', dbErr);
@@ -529,10 +528,10 @@ server.listen(PORT, '0.0.0.0', () => {
 
     console.log('⏳ Initiating direct client.login()...');
     
-    // Set an explicit 10-second timeout force-kill so it CANNOT hang silently
+    // Increased timeout buffer to 30s to allow Render cold sockets to complete
     const loginTimeout = setTimeout(() => {
-        console.error('❌ DISCORD GATEWAY HANDSHAKE TIMEOUT: Discord failed to respond within 10 seconds.');
-    }, 10000);
+        console.error('❌ DISCORD GATEWAY HANDSHAKE TIMEOUT: Discord failed to respond within 30 seconds.');
+    }, 30000);
 
     try {
         await client.login(TOKEN);
