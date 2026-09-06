@@ -28,15 +28,6 @@ if (!TOKEN) {
 }
 console.log('✅ Environment parameters verified successfully.');
 
-// --- CONNECT TO MONGODB ATLAS ---
-if (MONGODB_URI) {
-    mongoose.connect(MONGODB_URI)
-        .then(() => console.log('💾 MongoDB Cloud Storage Connected Successfully!'))
-        .catch(err => console.error('❌ MongoDB Connection Failure:', err));
-} else {
-    console.warn('⚠️ MONGODB_URI is missing from environment variables. Decks will not persist!');
-}
-
 // --- DEFINE MONGODB SCHEMAS ---
 const QuizDeck = mongoose.model('QuizDeck', new mongoose.Schema({
     deckId: { type: String, required: true, unique: true }, // Discord Message ID
@@ -47,7 +38,7 @@ const QuizDeck = mongoose.model('QuizDeck', new mongoose.Schema({
     questions: Array
 }));
 
-// --- RUNTIME MEMORY STORAGE REGISTRY (For Active Play Sessions Only) ---
+// --- RUNTIME MEMORY STORAGE REGISTRY ---
 const globalStorage = new Map();
 
 // --- PRE-COMPILED PARSER REGEXES ---
@@ -216,9 +207,9 @@ function buildQuizEmbed(item, index, total, score, answeredCount, quizTitle, cho
 // --- INITIALIZE CLIENT INSTANCE ---
 const client = new Client({
     intents: [
-        GatewayIntentBits.Guilds, 
+        GatewayIntentBits.Guilds,
         GatewayIntentBits.GuildMessages,
-        GatewayIntentBits.MessageContent // Must be explicitly declared
+        GatewayIntentBits.MessageContent
     ]
 });
 
@@ -236,7 +227,7 @@ client.on('shardResume', (id, replayedEvents) => {
 });
 
 // --- AUTOMATIC COMMAND REGISTRATION ON BOOT ---
-client.once('clientReady', async () => {
+client.once('ready', async () => {
     console.log(`🤖 Discord Gateway Connected! Active session user: ${client.user.tag}`);
 
     const commands = [
@@ -392,7 +383,6 @@ client.on('interactionCreate', async (interaction) => {
                     const sentMessage = await interaction.channel.send({ embeds: [roomEmbed], components: [joinRow] }).catch(console.log);
                     
                     if (sentMessage) {
-                        // SAVE PERMANENTLY TO MONGODB ATLAS
                         await QuizDeck.create({
                             deckId: sentMessage.id,
                             title: quizTitle,
@@ -419,7 +409,6 @@ client.on('interactionCreate', async (interaction) => {
         if (interaction.customId === 'room_join_portal') {
             await interaction.deferReply({ ephemeral: true }).catch(console.log);
 
-            // READ PERMANENTLY FROM MONGODB ATLAS
             const roomData = await QuizDeck.findOne({ deckId: interaction.message.id }).catch(console.log);
 
             if (!roomData || !roomData.questions || roomData.questions.length === 0) {
@@ -524,13 +513,25 @@ const server = http.createServer((req, res) => {
 
 server.listen(PORT, '0.0.0.0', async () => {
     console.log(`🌐 Render Health Check Interface bound to 0.0.0.0:${PORT}`);
-    console.log('⏳ Initiating Discord Gateway login sequence...');
     
+    // 1. Connect to MongoDB Atlas
+    if (MONGODB_URI) {
+        try {
+            await mongoose.connect(MONGODB_URI);
+            console.log('💾 MongoDB Cloud Storage Connected Successfully!');
+        } catch (dbErr) {
+            console.error('❌ MongoDB Connection Failure:', dbErr);
+        }
+    } else {
+        console.warn('⚠️ MONGODB_URI missing from environment variables.');
+    }
+
+    // 2. Login to Discord Gateway
+    console.log('⏳ Initiating Discord Gateway login sequence...');
     try {
         await client.login(TOKEN);
-        console.log('✅ client.login() executed successfully.');
+        console.log('✅ client.login() call triggered successfully.');
     } catch (loginError) {
-        console.error('❌ CRITICAL GATEWAY LOGIN FAILURE:');
-        console.error(loginError);
+        console.error('❌ CRITICAL GATEWAY LOGIN FAILURE:', loginError);
     }
 });
