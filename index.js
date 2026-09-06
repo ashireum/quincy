@@ -215,7 +215,11 @@ function buildQuizEmbed(item, index, total, score, answeredCount, quizTitle, cho
 
 // --- INITIALIZE CLIENT INSTANCE ---
 const client = new Client({
-    intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages]
+    intents: [
+        GatewayIntentBits.Guilds, 
+        GatewayIntentBits.GuildMessages,
+        GatewayIntentBits.MessageContent // Must be explicitly declared
+    ]
 });
 
 // --- PERMANENT GATEWAY RECONNECT HANDLERS ---
